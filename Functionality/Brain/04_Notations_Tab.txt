@@ -1,0 +1,28 @@
+Clefs
+Key signatures
+Time signatures
+Free rhythm
+Barlines
+Lines
+Hairpins
+Slurs
+Edit Lines
+Symbols
+Edit Symbols
+Noteheads
+Percussion
+Edit Noteheads
+Beam groups
+Beam positions
+Beamed rests and stemlets
+Importing graphics
+Brackets and braces
+Accidentals
+Arpeggios
+Articulations
+Grace notes
+Jazz articulations
+Repeat bars
+Stems and leger lines
+Ties
+Tremolos

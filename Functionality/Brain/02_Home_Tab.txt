@@ -1,0 +1,13 @@
+Selections and passages
+Cues
+Ideas
+Instruments
+Staves
+Edit Instruments
+Bars and bar rests
+Color
+Filters and Find
+Hiding objects
+Inspector
+Batch Processing plug-ins
+Other plug-ins

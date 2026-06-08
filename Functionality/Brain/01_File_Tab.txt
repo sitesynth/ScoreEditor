@@ -1,0 +1,31 @@
+Working with files
+Sharing files
+Starting a new score
+Opening files from previous versions ------------- This is only cloud editor. you can not save local file
+
+Opening MIDI files
+Opening MusicXML files
+PhotoScore Lite----------- This is external function of AI
+AudioScore Lite
+Splitting and joining scores
+Printing
+Exporting audio files
+Exporting graphics
+Exporting MIDI files
+Exporting MusicXML files
+Exporting to previous versions
+Exporting Scorch web pages
+Exporting PDF files
+Exporting manuscript paper ----------Cool function. Let s call as in figma - Styles!
+Classroom Control
+
+------------------------------------------
+Worksheet Creator -------- Also cool function. but for this we will offer library with templates. (will be two ways create project. Create new composition or create worksheet and there you can choose template)
+Adding your own worksheets ----People can create their own templates they also can share them in ScoerSynt Community 
+-----------------------------------------
+
+Working with plug-ins ----------no plagins yet, but for future yes
+
+Preferences 
+Keyboard shortcuts
+Display settings ---- Display settings will be always on the right side // wprking panel (like figma) where you can control colors, space and ect

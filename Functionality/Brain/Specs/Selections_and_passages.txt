@@ -1,0 +1,85 @@
+Selections and passages
+
+Goal
+Make it fast and predictable to target exactly the music/objects the user intends, then apply an edit operation to that target.
+
+Selection types
+Single selection
+- One object only (note, rest, text, line, symbol, etc.).
+- Clicking a note can optionally audition/play it.
+
+Multiple selection
+- Several separate objects (not necessarily contiguous in time).
+- Best for non-note objects (e.g., delete several articulations, move several text items).
+- Add/remove items with Ctrl+click (toggle an item in the set).
+
+Passage selection (range)
+- A continuous time-span across one or more staves (a "rectangle" of music).
+- Staff passage: range across a chosen set of staves.
+- System passage: same time-span but includes all staves.
+
+Visual feedback
+- Selected objects change color to show state.
+- Consider color rules by "scope":
+  - Voice-attached items show voice color.
+  - Items that apply to all voices show a shared selection color.
+  - System-level items show a distinct system selection color.
+- Passage selection shows a translucent overlay/box over the selected region.
+
+Core interactions
+Mouse
+- Single: click an object.
+- Multiple: Ctrl+click more objects to add/remove.
+- Passage: click start corner, then Shift+click end corner; selection becomes a time-span across staves.
+- Marquee/lasso: Shift+drag a rectangle to select several objects; if the drag spans the full height of a staff region, treat as passage.
+
+Keyboard
+- Navigation selection: Tab selects first object; Tab / Shift+Tab and arrow keys move selection to next/previous object.
+- Passage growth: Shift+arrow extends selection horizontally; Ctrl+Shift+arrow extends by larger steps (e.g., by bar).
+- Select all: Ctrl+A selects entire score.
+
+Quick selection shortcuts
+- Click empty area in a bar: select the bar on that staff.
+- Double-click empty bar area: select that staff for the system.
+- Triple-click empty bar area: select that staff for the whole score.
+- System passage modifier: holding Ctrl while making bar/staff quick selections selects a system passage.
+
+Object movement and attachment
+- Dragging a note up/down changes pitch.
+- Dragging other objects moves them and may change their rhythmic attachment position and/or staff.
+- Drag modifiers for non-note objects:
+  - Shift-drag: constrain movement to the initial drag direction.
+  - Alt-drag: move visually without changing attachment (keep anchor).
+  - Ctrl-drag: temporarily disable collision-avoid/magnetic layout for free positioning.
+
+What operations must work on selections
+- Copy/paste of single, multiple, and passage selections.
+- Delete selection (for system passage, deleting may delete bars/time-span, not just objects).
+- Repeat selection to the right (R) with sensible rules for bar boundaries (tie over vs truncate).
+- Transpose selection (by interval, by step, octave shifts).
+- Add chord tones by interval above/below selected notes.
+- Playback from selection start; move playhead to selection start.
+- Apply filters to expand/shrink selection by type (notes, dynamics, articulations, text style, etc.).
+- Run batch actions / plug-ins on the selection target.
+- Export selected region as graphics (rectangular export).
+
+Multicopy (pattern copy)
+- Single object -> paste to multiple staves at the same rhythmic position.
+- Multiple objects -> paste to multiple staves, preserving relative spacing.
+- Passage -> paste can fill a destination range by repeating horizontally (time) and vertically (staves).
+- Must define overwrite vs insert behavior clearly.
+
+Edge cases
+- Overlapping objects: provide a reliable way to cycle to the intended object (e.g., selection cycling with Tab).
+- Hidden staves: define whether passage operations include hidden staves (Sibelius multicopy does).
+- Mixed-scope content: passage ranges can include both staff-attached and system-attached objects.
+
+Data model (implementation-neutral)
+- Selection is a discriminated union:
+  - { kind: single, id }
+  - { kind: multiple, ids[] }
+  - { kind: passage, startPos, endPos, staffIds[], system: boolean }
+- Provide helpers:
+  - clearSelection (Esc)
+  - normalizeRange (ensure start <= end)
+  - includesStaff/staffSet editing (add/remove staves)

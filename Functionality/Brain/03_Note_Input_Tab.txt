@@ -1,0 +1,24 @@
+Introduction to note input
+Keypad
+Mouse input
+Alphabetic and step-time input
+Keyboard window
+Guitar tab input
+Fretboard window
+Guitar notation and tab
+Lute tablature
+Triplets and other tuplets
+Transposing
+Note input options
+Input Devices
+Flexi-time
+Voices
+Arrange
+Edit Arrange Styles
+Transformations
+Accidentals plug-ins
+Composing Tools plug-ins
+Notes and Rests plug-ins
+Simplify Notation plug-ins
+Tuplets plug-ins
+HyperControlTM

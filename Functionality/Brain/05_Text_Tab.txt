@@ -1,0 +1,17 @@
+Working with text
+Common text styles
+Figured bass and Roman numerals
+Instrument names
+Typography
+Edit Text Styles
+Lyrics
+Chord symbols
+Edit Chord Symbols
+Chord Symbols plug-ins
+Guitar scale diagrams
+Rehearsal marks
+Bar numbers
+Page numbers
+Text plug-ins
+Wildcards
+Font equivalents

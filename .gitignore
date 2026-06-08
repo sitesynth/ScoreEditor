@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Build
+build/
+dist/
+
+# Logs
+*.log
+
+# TypeScript
+tsconfig.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude memory (local only)
+.claude/
+
+# Environment
+.env
+.env.local
+.env*.local

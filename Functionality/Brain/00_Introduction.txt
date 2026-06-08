@@ -1,0 +1,5 @@
+The story of Sibelius
+About this Reference Guide
+Working with the ribbon
+Undo and Redo
+Connecting external MIDI devices

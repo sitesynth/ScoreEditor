@@ -1,0 +1,184 @@
+Working with the ribbon
+Undo and Redo
+Connecting external MIDI devices
+
+File tab
+Working with files
+Sharing files
+Starting a new score
+Opening files from previous versions
+Opening MIDI files
+Opening MusicXML files
+PhotoScore Lite - no need yet but i want to have it in future
+AudioScore Lite - no need yet but i want to have it in future
+
+Splitting and joining scores - indeed if music compositiom having several instruments in partiture, in the interface has to appear option to look up separate part(system ahve to create these parts automatically)
+
+Printing - only after export
+Exporting audio files
+Exporting graphics
+Exporting MIDI files
+Exporting MusicXML files
+Exporting to previous versions
+Exporting Scorch web pages
+Exporting PDF files
+Exporting manuscript paper
+Worksheet Creator - not bad idea... our app will need to have seprate templates for it. It will be done later
+Adding your own worksheets - also for later
+Working with plug-ins - also for later. could add Appstore for plugins like in figma
+Preferences - basic set up for now on the working panel
+Keyboard shortcuts - we will ad later
+Display settings - no need yet
+
+Home tab
+Selections and passages
+Cues
+Ideas
+Instruments
+Staves
+Edit Instruments
+Bars and bar rests
+Color
+Filters and Find
+Hiding objects
+Inspector
+Batch Processing plug-ins
+Other plug-ins
+
+Note Input tab
+Introduction to note input
+Keypad
+Mouse input
+Alphabetic and step-time input
+Keyboard window
+Guitar tab input
+Fretboard window
+Guitar notation and tab
+Lute tablature
+Triplets and other tuplets
+Transposing
+Note input options
+Input Devices
+Flexi-time
+Voices
+Arrange
+Edit Arrange Styles
+Transformations
+Accidentals plug-ins
+Composing Tools plug-ins
+Notes and Rests plug-ins
+Simplify Notation plug-ins
+Tuplets plug-ins
+HyperControlTM
+
+Notations tab
+Clefs
+Key signatures
+Time signatures
+Free rhythm
+Barlines
+Lines
+Hairpins
+Slurs
+Edit Lines
+Symbols
+Edit Symbols
+Noteheads
+Percussion
+Edit Noteheads
+Beam groups
+Beam positions
+Beamed rests and stemlets
+Importing graphics
+Brackets and braces
+Accidentals
+Arpeggios
+Articulations
+Grace notes
+Jazz articulations
+Repeat bars
+Stems and leger lines
+Ties
+Tremolos
+
+Text tab
+Working with text
+Common text styles
+Figured bass and Roman numerals
+Instrument names
+Typography
+Edit Text Styles
+Lyrics
+Chord symbols
+Edit Chord Symbols
+Chord Symbols plug-ins
+Guitar scale diagrams
+Rehearsal marks
+Bar numbers
+Page numbers
+Text plug-ins
+Wildcards
+Font equivalents
+
+Play tab
+Working with playback
+Playback Devices
+Mixer
+Live Tempo
+Live Playback
+Interpretation of your score
+Performance
+Playback dictionary
+Repeats
+Video
+Timecode and hit points
+Playback plug-ins
+Sibelius 7 Sounds
+MIDI for beginners
+Virtual instruments for beginners
+Working with virtual instruments
+ReWire
+MIDI messages
+SoundWorld
+
+Layout tab
+Document Setup
+Title and blank pages
+Staff spacing
+Focus on Staves
+Magnetic Layout
+Auto Breaks
+Breaks
+Multirests
+Layout and formatting
+Attachment
+
+Appearance tab
+Music engraving
+House Style
+Note spacing
+Default Positions
+Order
+Music fonts
+
+Parts tab
+Working with parts
+Editing parts
+Multiple Part Appearance
+Extracting parts
+
+Review tab
+Comments
+Highlight
+Versions
+Analysis plug-ins
+Proof-reading plug-ins
+
+View tab
+Document view
+Zoom
+Invisibles etc.
+Panels
+Window options
+
+Keyboard shortcuts

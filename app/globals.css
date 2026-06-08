@@ -1,0 +1,74 @@
+/* SMuFL font — Bravura (Steinberg, SIL OFL). Covers all standard music
+   notation glyphs (notes, rests, accidentals, clefs, dynamics, articulations,
+   ornaments...) via Unicode codepoints in the U+E000–U+F8FF private use area.
+   See https://w3c-cg.github.io/smufl/latest/tables/index.html */
+@font-face {
+  font-family: 'Bravura';
+  src: url('/fonts/Bravura.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+.smufl {
+  font-family: 'Bravura', serif;
+  font-feature-settings: normal;
+  line-height: 1;
+  user-select: none;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  /* ScoreSynth brand bg + scrollbar palette */
+  background: #211817;
+  color: #ffffff;
+  font-family: var(--font-inter), 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #211817; }
+::-webkit-scrollbar-thumb { background: #3d2a28; border-radius: 3px; }
+::selection { background: #c0392b; color: white; }
+h1, h2, h3, h4, h5, h6 { margin: 0; font-size: inherit; font-weight: inherit; }
+button { background: none; border: none; cursor: pointer; font-family: inherit; }
+input, textarea, select { font-family: inherit; }
+a { text-decoration: none; color: inherit; }
+::selection { background: #c0392b; color: white; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #e8e4de; }
+::-webkit-scrollbar-thumb { background: #bbb5ae; border-radius: 3px; }
+
+/* ─── v2 editor: SVG selection highlight ─────────────────────────────────── */
+/* Verovio draws notes/rests as <g class="note"> with nested <use> elements.
+   We set data-selected on the group and use CSS to tint its descendants. */
+g[data-selected="true"],
+g[data-selected="true"] * {
+  fill:   #2563eb !important;
+  stroke: #2563eb !important;
+  color:  #2563eb !important;
+}
+/* Hover / cursor:pointer ONLY in selection mode — in note-input we use
+   the ghost preview and the click should commit a new note, not feel like
+   selecting an existing one. The mode-aware class is set on the scroll
+   wrapper from page.tsx. */
+.mode-select g.note,
+.mode-select g.rest,
+.mode-select g.chord {
+  cursor: pointer;
+}
+.mode-select g.note:hover,
+.mode-select g.rest:hover,
+.mode-select g.chord:hover {
+  fill:   #60a5fa;
+  stroke: #60a5fa;
+}
+/* Hide Verovio's built-in tie path — we draw our own MuseScore-style flat
+   dome in page.tsx so the arc hugs the noteheads instead of dipping wide. */
+svg g.tie {
+  display: none;
+}
+/* Custom tie selection tint — path is filled (lens shape), so tint the
+   fill, not the stroke. */
+path.custom-tie[data-selected="true"] {
+  fill: #2563eb !important;
+}
