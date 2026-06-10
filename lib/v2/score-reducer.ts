@@ -35,7 +35,7 @@ export type ScoreAction =
   | { type: 'TOGGLE_PEDAL'; startId: string; endId?: string }
   | { type: 'SET_CLEF_CHANGE'; noteId: string; clef: 'treble' | 'bass' | 'alto' | null }
   | { type: 'SET_TIME_SIG_CHANGE'; noteId: string; num: number | null; den?: number }
-  | { type: 'TOGGLE_TUPLET'; itemId: string; num: 3 | 4 | 5 | 6 | 7 | 9 }
+  | { type: 'TOGGLE_TUPLET'; itemId: string; num: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }
   | { type: 'CONVERT_TO_GRACE'; noteId: string; kind: 'acciaccatura' | 'appoggiatura' }
   | { type: 'REMOVE_CHORD_NOTE'; noteId: string; chordIdx: number }
   | { type: 'ADD_TO_CHORD';  noteId: string; pitch: Pitch }
@@ -47,6 +47,7 @@ export type ScoreAction =
   | { type: 'TOGGLE_ORNAMENT'; noteId: string; ornament: string }
   | { type: 'SET_DYNAMICS'; noteId: string; dynamics: string | null }
   | { type: 'SET_STEM_DIR'; noteId: string; dir: 'up' | 'down' | 'auto' }
+  | { type: 'SET_BEAM'; noteId: string; mode: 'auto' | 'start' | 'continue' | 'end' | 'none' }
   | { type: 'SET_TREMOLO'; noteId: string; count: number }
   | { type: 'TOGGLE_WORDS'; noteId: string; text: string }
   | { type: 'ADD_MEASURE' }
@@ -1099,6 +1100,24 @@ export function scoreReducer(state: ScoreState, action: ScoreAction): ScoreState
       return { ...hist, present: newScore, cursor: state.cursor };
     }
 
+    case 'SET_BEAM': {
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const n = measure.notes.find(x => x.id === action.noteId && x.type === 'note');
+          if (n && n.type === 'note') {
+            if (action.mode === 'auto') delete n.beam;
+            else n.beam = action.mode;
+            touched = true;
+          }
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
     case 'SET_TREMOLO': {
       const hist = saveHistory(state);
       const newScore = cloneScore(state.present);
@@ -1467,7 +1486,7 @@ export function useScore(initialScore?: Score) {
     [],
   );
   const toggleTuplet = useCallback(
-    (itemId: string, num: 3 | 4 | 5 | 6 | 7 | 9) =>
+    (itemId: string, num: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) =>
       dispatch({ type: 'TOGGLE_TUPLET', itemId, num }),
     [],
   );
@@ -1485,6 +1504,11 @@ export function useScore(initialScore?: Score) {
   );
   const setStemDir = useCallback(
     (noteId: string, dir: 'up' | 'down' | 'auto') => dispatch({ type: 'SET_STEM_DIR', noteId, dir }),
+    [],
+  );
+  const setBeam = useCallback(
+    (noteId: string, mode: 'auto' | 'start' | 'continue' | 'end' | 'none') =>
+      dispatch({ type: 'SET_BEAM', noteId, mode }),
     [],
   );
   const setTremolo = useCallback(
@@ -1552,6 +1576,7 @@ export function useScore(initialScore?: Score) {
     toggleOrnament,
     setDynamics,
     setStemDir,
+    setBeam,
     setTremolo,
     toggleWords,
     changeDuration,

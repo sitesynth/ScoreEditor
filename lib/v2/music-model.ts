@@ -64,11 +64,16 @@ export interface TupletInfo {
  *  quadruplet inside dotted units). */
 export function defaultTupletConfig(num: number): { den: number; shiftDown: number } {
   switch (num) {
+    // Duplet (2 in time of 3) — used in compound meters: 2 notes occupy
+    // the space of 3 of the same duration.
+    case 2: return { den: 3, shiftDown: 0 };
     case 3: return { den: 2, shiftDown: 1 };
     case 4: return { den: 6, shiftDown: 1 };
     case 5: return { den: 4, shiftDown: 2 };
     case 6: return { den: 4, shiftDown: 2 };
     case 7: return { den: 4, shiftDown: 2 };
+    // Octuplet (8 in time of 6 — typical) — falls into the 8th-note frame.
+    case 8: return { den: 6, shiftDown: 2 };
     case 9: return { den: 8, shiftDown: 3 };
     default: return { den: 2, shiftDown: 1 };
   }
@@ -119,6 +124,16 @@ export interface Note {
   dynamics?: string;
   /** Stem direction override. Omit = let Verovio auto-pick. */
   stemDir?: 'up' | 'down';
+  /** Beam grouping override.
+   *   • `auto` (or omitted) — Verovio decides based on measure beat grid.
+   *   • `start`    — this note begins a beam group.
+   *   • `continue` — this note is in the middle of a beam group.
+   *   • `end`      — this note ends a beam group.
+   *   • `none`     — this note is rendered with flag (no beam) regardless.
+   *  Sibelius/MuseScore behaviour: setting `none` on a note tells the
+   *  engraver "don't include me in any beam". Setting `start` forces a
+   *  new beam group here (even mid-beat). */
+  beam?: 'auto' | 'start' | 'continue' | 'end' | 'none';
   /** Tremolo slash count (1..5). 0 / undefined = no tremolo. */
   tremolo?: number;
   /** Free text directions ("pizz.", "arco", "sord.", "cresc.", "dim.",

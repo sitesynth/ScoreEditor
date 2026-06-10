@@ -163,10 +163,238 @@ function inlineAttributesForNote(item: Note): string {
   return `<attributes>${parts.join('')}</attributes>`;
 }
 
+// Durations that get a beam (8th and shorter). Quarter and longer always
+// have a stem with no beam, so they're never part of a beam group.
+const BEAMABLE_DURATIONS: Record<DurationBase, boolean> = {
+  breve: false, whole: false, half: false, quarter: false,
+  eighth: true, '16th': true, '32nd': true, '64th': true,
+  '128th': true, '256th': true, '512th': true, '1024th': true,
+};
+
+// How many beam strokes (parallel lines) each duration carries.
+//   8th = 1, 16th = 2, 32nd = 3, 64th = 4, …
+// In MusicXML each stroke gets its own <beam number="N"> tag, so we need to
+// emit one beam element per level, each with its own begin/continue/end
+// computed inside its own grouping window.
+const BEAM_LEVELS: Record<DurationBase, number> = {
+  breve: 0, whole: 0, half: 0, quarter: 0,
+  eighth: 1, '16th': 2, '32nd': 3, '64th': 4,
+  '128th': 5, '256th': 6, '512th': 7, '1024th': 8,
+};
+
+// Pick the duration "yardstick" for a given beam level. Level 1 (8th-rate)
+// uses the 8th-note window (half-measure in 4/4). Level 2 uses the 16th
+// window (per-beat). Level 3+ uses the 32nd window (half-beat). This is
+// what makes the tertiary 32nd-stroke break into 4+4 while primary and
+// secondary stay continuous across the whole beat.
+function beamYardstickForLevel(level: number): DurationBase {
+  if (level === 1) return 'eighth';
+  if (level === 2) return '16th';
+  return '32nd';
+}
+
+// How many quarter-note beats live in a beam group for the given meter
+// AND the given note duration. Standard engraving rule, observed in the
+// user's reference scores:
+//   • EIGHTH notes        → 4/4: 2 beats (4 eighths in one beam, half-measure)
+//                           others: 1 beat (paired)
+//   • SIXTEENTH notes     → 1 beat per group (4 sixteenths per beam)
+//   • 32nd and shorter    → 0.5 beat per group (4 thirty-seconds per beam,
+//                           8 sixty-fourths per beam, …)
+//   • Compound meters     → 1.5 beats (dotted-quarter pulse: three 8ths or
+//                           six 16ths per beam)
+//   • Other simple meters → 1 beat (default)
+function beamGroupBeats(num: number, den: number, base: DurationBase): number {
+  // Compound meters: dotted-quarter pulse drives note grouping.
+  if (den === 8 && num % 3 === 0) return 1.5;
+  // Simple meters with 8-denominator (3/8, 5/8, 7/8): one 8th per beat.
+  if (den === 8) return 0.5;
+
+  if (base === 'eighth') {
+    if (den === 4 && num === 4) return 2;   // 4/4: half-measure (4 eighths)
+    if (den === 2) return 2;                 // cut time: same
+    return 1;                                // 2/4, 3/4, …: pairs
+  }
+  if (base === '16th') return 1;             // 4 sixteenths per beat
+  // 32nd, 64th, 128th, … — half-beat windows so groups of 4 land cleanly.
+  return 0.5;
+}
+
+/** Per-note beam status. Each note may carry multiple beam levels (a 32nd
+ *  has 3 strokes, each potentially in different start/continue/end roles).
+ *  Empty array (or absent map entry) → no beam at all (flag).
+ */
+type BeamLevelStatus = { level: number; mode: 'start' | 'continue' | 'end' };
+
+/** Compute automatic multi-level beam grouping for a measure's notes.
+ *  Returns a Map keyed by note id → array of per-level beam statuses.
+ *
+ *  Two-phase algorithm:
+ *   PHASE 1 — form LEVEL-1 (primary, 8th-rate) groups using the
+ *             PAIR-AND-CHAIN rule (1→flag, 2→pair, 3→pair+flag, 4→quad,
+ *             …). Trailing odd notes are excluded from the group and
+ *             become flagged — no beam tags at any level.
+ *   PHASE 2 — inside each level-1 group, emit `start/continue/end` on
+ *             level 1 across the whole group. For levels 2..maxLevel,
+ *             sub-divide the group's notes (whose duration provides this
+ *             level's stroke) by the level's smaller window, emitting
+ *             `start/continue/end` per sub-window.
+ *
+ *  Result: primary beam stays continuous across the full level-1 group,
+ *  while secondary/tertiary beams break at their natural sub-group
+ *  boundaries (e.g. 8 thirty-seconds → 1 long primary + 1 long secondary +
+ *  tertiary broken into 4+4).
+ *
+ *  Rests and non-beamable notes break level-1 groups (and therefore every
+ *  higher level too). User-explicit note.beam skips auto-beaming.
+ */
+function computeAutoBeams(
+  notes: NoteOrRest[],
+  timeSigNum: number,
+  timeSigDen: number,
+): Map<string, BeamLevelStatus[]> {
+  const result = new Map<string, BeamLevelStatus[]>();
+  const addStatus = (id: string, s: BeamLevelStatus) => {
+    const arr = result.get(id);
+    if (arr) arr.push(s);
+    else result.set(id, [s]);
+  };
+
+  // Walk once to collect (id, base, offset) for every beamable note, plus
+  // the deepest level present in this measure.
+  type Entry = { id: string; base: DurationBase; offset: number };
+  const entries: Entry[] = [];
+  let maxLevel = 0;
+  {
+    let offset = 0;
+    for (const item of notes) {
+      const dur = itemBeats(item);
+      const isNote = item.type === 'note';
+      const beamable =
+        isNote &&
+        BEAMABLE_DURATIONS[item.duration.base] &&
+        !(item as Note).beam;
+      if (beamable) {
+        const base = (item as Note).duration.base;
+        entries.push({ id: item.id, base, offset });
+        maxLevel = Math.max(maxLevel, BEAM_LEVELS[base]);
+      } else {
+        // Mark a break — sentinel with maxLevel=0 entry would complicate
+        // logic, so we just signal via base='quarter' as a non-beamable
+        // marker that won't fall into any group window.
+        entries.push({ id: '__break__', base: 'quarter', offset });
+      }
+      offset += dur;
+    }
+  }
+  if (maxLevel === 0) return result;
+
+  // ── PHASE 1: form LEVEL-1 groups. ──
+  //
+  // Window for level-1 depends on the deepest duration in this measure:
+  //   • maxLevel === 1 (only 8ths)           → 8th-rate window (2 beats in 4/4)
+  //   • maxLevel === 2 (16ths present)       → 16th-rate window (1 beat)
+  //   • maxLevel ≥ 3 (32nds or shorter)      → 8th-rate window (long primary)
+  //
+  // PAIR-AND-CHAIN rule (1→flag, 2→pair, 3→pair+flag, 4→quad, …) applies
+  // ONLY when maxLevel === 1 — that's the eighth-note typing aid the user
+  // asked for. For 16ths and shorter the rule is plain "all beamable notes
+  // in the window form one beam" — so 3 sixteenths in a beat give a
+  // 3-beam, not 2-beam + flag.
+  // User-facing rule (per user 2026-06-10): "16ths just split by 4."
+  const level1Yardstick: DurationBase = maxLevel >= 3 ? 'eighth' : (maxLevel === 2 ? '16th' : 'eighth');
+  const level1Window = beamGroupBeats(timeSigNum, timeSigDen, level1Yardstick);
+  const applyPairAndChain = maxLevel === 1;
+  const groups: Entry[][] = [];
+  {
+    let pending: Entry[] = [];
+    let curBgIdx = -1;
+    const flush = () => {
+      const n = pending.length;
+      if (n >= 2) {
+        if (applyPairAndChain) {
+          // Even count → all beamed. Odd → drop the trailing one (flagged).
+          const beamed = n - (n % 2);
+          if (beamed >= 2) groups.push(pending.slice(0, beamed));
+        } else {
+          // Plain rule: every run of ≥ 2 forms one beam group.
+          groups.push(pending.slice());
+        }
+      }
+      // n === 1 → not in any group (flagged), regardless of mode.
+      pending = [];
+    };
+    for (const e of entries) {
+      if (e.id === '__break__') { flush(); curBgIdx = -1; continue; }
+      const bgIdx = Math.floor(e.offset / level1Window + 1e-9);
+      if (bgIdx === curBgIdx) {
+        pending.push(e);
+      } else {
+        flush();
+        pending.push(e);
+        curBgIdx = bgIdx;
+      }
+    }
+    flush();
+  }
+
+  // ── PHASE 2: emit beam tags per group, per level. ──
+  for (const group of groups) {
+    // Level 1 — straight start/continue/end across the whole group.
+    addStatus(group[0].id, { level: 1, mode: 'start' });
+    for (let i = 1; i < group.length - 1; i++) addStatus(group[i].id, { level: 1, mode: 'continue' });
+    addStatus(group[group.length - 1].id, { level: 1, mode: 'end' });
+
+    // Higher levels — sub-divide the group's notes by the level's window.
+    // Only notes whose duration supplies this level's stroke participate.
+    for (let level = 2; level <= maxLevel; level++) {
+      const yardstick = beamYardstickForLevel(level);
+      const win = beamGroupBeats(timeSigNum, timeSigDen, yardstick);
+
+      // Walk the group, building sub-runs by window index. Notes that
+      // don't carry this level break the sub-run (their stroke is absent
+      // here, so the beam at this level can't continue through them).
+      let subRun: Entry[] = [];
+      let lastBgIdx = -1;
+      const flushSub = () => {
+        if (subRun.length >= 2) {
+          addStatus(subRun[0].id, { level, mode: 'start' });
+          for (let i = 1; i < subRun.length - 1; i++) addStatus(subRun[i].id, { level, mode: 'continue' });
+          addStatus(subRun[subRun.length - 1].id, { level, mode: 'end' });
+        }
+        // Singletons at deeper levels (e.g. one 32nd inside a group of
+        // 16ths) are left without a tag — Verovio renders that as a
+        // partial/half-beam ("hook") attached to the nearest neighbour,
+        // which is the standard engraving treatment.
+        subRun = [];
+      };
+      for (const e of group) {
+        const carries = BEAM_LEVELS[e.base] >= level;
+        const bgIdx = carries ? Math.floor(e.offset / win + 1e-9) : -1;
+        if (carries && bgIdx === lastBgIdx) {
+          subRun.push(e);
+        } else {
+          flushSub();
+          if (carries) {
+            subRun.push(e);
+            lastBgIdx = bgIdx;
+          } else {
+            lastBgIdx = -1;
+          }
+        }
+      }
+      flushSub();
+    }
+  }
+
+  return result;
+}
+
 function noteXml(
   item: NoteOrRest,
   prevHadTieStart: boolean = false,
   priorAlterInMeasure: number | null = null,
+  autoBeam?: BeamLevelStatus[] | 'start' | 'continue' | 'end' | 'none',
 ): string {
   const dur = itemDurationDiv(item);
   const type = BASE_TO_TYPE[item.duration.base];
@@ -296,6 +524,38 @@ function noteXml(
 
   const stemXml = item.stemDir ? `<stem>${item.stemDir}</stem>` : '';
 
+  // Beam tags. Priority:
+  //   1. User-explicit beam from item.beam (start/continue/end/none) — wins
+  //      over auto-beaming, applied to level 1 only.
+  //   2. autoBeam is either:
+  //      • an array of BeamLevelStatus (multi-level, from computeAutoBeams)
+  //      • a single string mode (legacy ghost path — applied to level 1)
+  //   3. Nothing — flag.
+  //
+  // "none" on level 1 → emit begin+end on level 1 (standard MusicXML idiom
+  // for "flagged, no beam to neighbours").
+  const modeToTag = (m: 'start' | 'continue' | 'end'): string =>
+    m === 'start' ? 'begin' : m === 'continue' ? 'continue' : 'end';
+
+  let beamXml = '';
+  if (item.beam && item.beam !== 'auto') {
+    // User override — always level 1.
+    if (item.beam === 'none') {
+      beamXml = '<beam number="1">begin</beam><beam number="1">end</beam>';
+    } else {
+      beamXml = `<beam number="1">${modeToTag(item.beam)}</beam>`;
+    }
+  } else if (Array.isArray(autoBeam)) {
+    // Multi-level auto. Sort by level so the renderer sees them in order.
+    const sorted = [...autoBeam].sort((a, b) => a.level - b.level);
+    for (const s of sorted) {
+      beamXml += `<beam number="${s.level}">${modeToTag(s.mode)}</beam>`;
+    }
+  } else if (autoBeam === 'start' || autoBeam === 'continue' || autoBeam === 'end') {
+    beamXml = `<beam number="1">${modeToTag(autoBeam)}</beam>`;
+  }
+  // autoBeam === 'none' or undefined → no beam tag (flag).
+
   // Notehead shape override (broken/slash/x/diamond/…).
   const noteheadXml = item.notehead && item.notehead !== 'normal'
     ? `<notehead>${item.notehead}</notehead>` : '';
@@ -355,6 +615,7 @@ function noteXml(
   ${accidentalXml}
   ${stemXml}
   ${noteheadXml}
+  ${beamXml}
   ${notationsXml}
 </note>`;
 
@@ -393,12 +654,53 @@ function noteXml(
  *  Also maintains per-measure accidental state so a note re-occurring at the
  *  same pitch (step+octave) gets a natural sign when the user cleared its
  *  alteration. */
-function renderNotesXml(notes: NoteOrRest[], initialPrevTie: boolean = false): { xml: string; endingTie: boolean } {
+/** Build a virtual note list that interleaves the model notes with a ghost
+ *  preview at its correct beat offset. Used only for beam-grouping math —
+ *  the real render still emits ghost through ghostNoteXml. The returned
+ *  list's element with id `__ghost__` represents the ghost; map lookup
+ *  results for that id are used when emitting the ghost's <beam> tag. */
+function notesForBeamingWithGhost(
+  notes: NoteOrRest[],
+  ghost: GhostSpec,
+  maxBeats: number,
+): NoteOrRest[] {
+  const ghostStartBeat = ghost.slotIndex * (maxBeats / ghost.slotsTotal);
+  const ghostNote: Note = {
+    type: 'note',
+    id: '__ghost__',
+    pitch: ghost.pitch,
+    duration: { base: ghost.base, dots: ghost.dots },
+  };
+  const out: NoteOrRest[] = [];
+  let offset = 0;
+  let inserted = false;
+  for (const n of notes) {
+    if (!inserted && offset >= ghostStartBeat - 0.001) {
+      out.push(ghostNote);
+      inserted = true;
+    }
+    out.push(n);
+    offset += itemBeats(n);
+  }
+  if (!inserted) out.push(ghostNote);
+  return out;
+}
+
+function renderNotesXml(
+  notes: NoteOrRest[],
+  initialPrevTie: boolean = false,
+  timeSigNum: number = 4,
+  timeSigDen: number = 4,
+  externalBeams?: Map<string, BeamLevelStatus[]>,
+): { xml: string; endingTie: boolean } {
   let prevTie = initialPrevTie;
   // Tracks the LAST emitted alter per "step+octave" within this measure
   // (e.g. "G4" → 1 means a G# was rendered). Used to decide whether the
   // next G4 in this measure needs a courtesy natural.
   const measureAcc = new Map<string, number>();
+  // Beam map: either supplied by caller (when a ghost was injected and the
+  // map covers real-notes + ghost together) or computed from `notes` alone.
+  const autoBeams = externalBeams ?? computeAutoBeams(notes, timeSigNum, timeSigDen);
   const out: string[] = [];
   for (const n of notes) {
     if (n.type === 'note') {
@@ -411,7 +713,7 @@ function renderNotesXml(notes: NoteOrRest[], initialPrevTie: boolean = false): {
       const so = pitchToStepOctave(n.pitch);
       const key = `${so.step}${so.octave}`;
       const prior = measureAcc.has(key) ? measureAcc.get(key)! : null;
-      out.push(noteXml(n, prevTie, prior));
+      out.push(noteXml(n, prevTie, prior, autoBeams.get(n.id)));
       // Update map with the alter THIS note carries forward to the rest of
       // the measure (the alter actually displayed, which is `so.alter`).
       measureAcc.set(key, so.alter);
@@ -498,8 +800,13 @@ function ghostChordOnlyXml(g: GhostSpec): string {
 </note>`;
 }
 
-/** XML for a ghost-preview note — fully-formed pitch note + color attribute. */
-function ghostNoteXml(g: GhostSpec): string {
+/** XML for a ghost-preview note — fully-formed pitch note + color attribute.
+ *  When `autoBeam` is set, emits a matching `<beam>` tag so the ghost joins
+ *  the running beam group instead of looking visually disconnected. */
+function ghostNoteXml(
+  g: GhostSpec,
+  autoBeam?: BeamLevelStatus[] | 'start' | 'continue' | 'end' | 'none',
+): string {
   const dur = durationDiv(g.base, g.dots);
   const type = BASE_TO_TYPE[g.base];
   const dots = '<dot/>'.repeat(g.dots);
@@ -509,6 +816,19 @@ function ghostNoteXml(g: GhostSpec): string {
     alter === 1 ? `<accidental color="${GHOST_COLOR}">sharp</accidental>` :
     alter === -1 ? `<accidental color="${GHOST_COLOR}">flat</accidental>` :
     '';
+  // Multi-level beam tags. Skip 'none' (avoids Verovio confusion with the
+  // begin+end-on-one-note idiom in the preview).
+  const modeToTag = (m: 'start' | 'continue' | 'end'): string =>
+    m === 'start' ? 'begin' : m === 'continue' ? 'continue' : 'end';
+  let beamXml = '';
+  if (Array.isArray(autoBeam)) {
+    const sorted = [...autoBeam].sort((a, b) => a.level - b.level);
+    for (const s of sorted) {
+      beamXml += `<beam number="${s.level}">${modeToTag(s.mode)}</beam>`;
+    }
+  } else if (autoBeam === 'start' || autoBeam === 'continue' || autoBeam === 'end') {
+    beamXml = `<beam number="1">${modeToTag(autoBeam)}</beam>`;
+  }
   // The `color` attribute on <note> tints notehead, stem, ledger lines, and
   // accidental at once. Verovio respects it.
   return `<note color="${GHOST_COLOR}">
@@ -522,6 +842,7 @@ function ghostNoteXml(g: GhostSpec): string {
   <type>${type}</type>
   ${dots}
   ${accidentalXml}
+  ${beamXml}
 </note>`;
 }
 
@@ -552,12 +873,26 @@ function measureXml(
   const slotBeats = ghost ? maxBeats / ghost.slotsTotal : 0;
   const ghostStartBeat = ghost ? ghost.slotIndex * slotBeats : 0;
 
+  // When a ghost is in flight, compute beam grouping on the virtual list
+  // (real notes + ghost at its beat offset). The same map is then used for
+  // every render path below — keeps the ghost preview's beam in sync with
+  // what the commit will produce.
+  const beamMap: Map<string, BeamLevelStatus[]> | undefined =
+    ghost
+      ? computeAutoBeams(
+          notesForBeamingWithGhost(notes, ghost, maxBeats),
+          timeSigNum,
+          timeSigDen,
+        )
+      : undefined;
+  const beamModeOf = (id: string) => beamMap?.get(id);
+
   if (notes.length === 0 && ghost) {
     // Empty measure: [rests before] [ghost] [rests after]
     const afterBeats = Math.max(0, maxBeats - ghostStartBeat - ghostBeats);
     const parts: string[] = [];
     if (ghostStartBeat > 0.001) parts.push(padRests(ghostStartBeat));
-    parts.push(ghostNoteXml(ghost));
+    parts.push(ghostNoteXml(ghost, beamModeOf('__ghost__')));
     if (afterBeats > 0.001) parts.push(padRests(afterBeats));
     body = parts.join('\n');
   } else if (notes.length === 0) {
@@ -599,7 +934,9 @@ function measureXml(
       // Ghost replaces a rest in-place — render it tinted, leave the rest
       // out of the output for the duration of the ghost.
       const items: string[] = notes.map((n, i) =>
-        i === targetIndex ? ghostNoteXml(ghost) : noteXml(n),
+        i === targetIndex
+          ? ghostNoteXml(ghost, beamModeOf('__ghost__'))
+          : noteXml(n, false, null, beamModeOf(n.id)),
       );
       body = items.join('\n');
     } else if (
@@ -614,10 +951,12 @@ function measureXml(
       const showChordPreview =
         target.type === 'note' && !existingMidis.includes(ghost.pitch.midi);
       const items: string[] = notes.map((n, i) => {
-        if (i !== targetIndex) return noteXml(n);
+        if (i !== targetIndex) return noteXml(n, false, null, beamModeOf(n.id));
+        // Chord stack — preview pitch shares stem with the real note, so it
+        // doesn't get its own beam tag.
         return showChordPreview
-          ? noteXml(n) + '\n' + ghostChordOnlyXml(ghost)
-          : noteXml(n);
+          ? noteXml(n, false, null, beamModeOf(n.id)) + '\n' + ghostChordOnlyXml(ghost)
+          : noteXml(n, false, null, beamModeOf(n.id));
       });
       body = items.join('\n');
     } else if (
@@ -633,36 +972,36 @@ function measureXml(
         const items: string[] = [];
         for (let i = 0; i < notes.length; i++) {
           if (i !== containingIdx) {
-            items.push(noteXml(notes[i]));
+            items.push(noteXml(notes[i], false, null, beamModeOf(notes[i].id)));
             continue;
           }
           if (containingOffset > 0.001) items.push(padRests(containingOffset));
-          items.push(ghostNoteXml(ghost));
+          items.push(ghostNoteXml(ghost, beamModeOf('__ghost__')));
           if (trailing > 0.001) items.push(padRests(trailing));
         }
         body = items.join('\n');
       } else {
         // Ghost doesn't fit inside the rest — render normally.
-        const r = renderNotesXml(notes, initialPrevTie);
+        const r = renderNotesXml(notes, initialPrevTie, timeSigNum, timeSigDen, beamMap);
         endingTie = r.endingTie;
         const remBeats = maxBeats - usedBeats;
         body = remBeats > 0.001 ? r.xml + '\n' + padRests(remBeats) : r.xml;
       }
     } else if (ghost && ghostStartBeat >= usedBeats - 0.001 && ghostStartBeat + ghostBeats <= maxBeats + 0.001) {
       // Ghost lands after existing items — preview an "append".
-      const r = renderNotesXml(notes, initialPrevTie);
+      const r = renderNotesXml(notes, initialPrevTie, timeSigNum, timeSigDen, beamMap);
       endingTie = r.endingTie;
       const itemsXml = r.xml;
       const gap = Math.max(0, ghostStartBeat - usedBeats);
       const afterBeats = Math.max(0, maxBeats - ghostStartBeat - ghostBeats);
       const parts: string[] = [itemsXml];
       if (gap > 0.001) parts.push(padRests(gap));
-      parts.push(ghostNoteXml(ghost));
+      parts.push(ghostNoteXml(ghost, beamModeOf('__ghost__')));
       if (afterBeats > 0.001) parts.push(padRests(afterBeats));
       body = parts.join('\n');
     } else {
       // No ghost or ghost conflicts with a real note — render normally.
-      const r = renderNotesXml(notes, initialPrevTie);
+      const r = renderNotesXml(notes, initialPrevTie, timeSigNum, timeSigDen, beamMap);
       endingTie = r.endingTie;
       const remBeats = maxBeats - usedBeats;
       body = remBeats > 0.001 ? r.xml + '\n' + padRests(remBeats) : r.xml;

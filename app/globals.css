@@ -53,22 +53,57 @@ g[data-selected="true"] * {
    wrapper from page.tsx. */
 .mode-select g.note,
 .mode-select g.rest,
-.mode-select g.chord {
+.mode-select g.chord,
+.mode-select g.beam,
+.mode-select g.stem,
+.mode-select g.flag,
+.mode-select g.accid,
+.mode-select g.dot,
+.mode-select g.tuplet {
   cursor: pointer;
 }
 .mode-select g.note:hover,
 .mode-select g.rest:hover,
-.mode-select g.chord:hover {
+.mode-select g.chord:hover,
+.mode-select g.beam:hover,
+.mode-select g.stem:hover,
+.mode-select g.flag:hover,
+.mode-select g.accid:hover,
+.mode-select g.dot:hover,
+.mode-select g.tuplet:hover {
   fill:   #60a5fa;
   stroke: #60a5fa;
+}
+/* Selected beam/stem/flag/accid/dot/tuplet — engraving primitives that
+   in a future iteration will sprout vector handles for repositioning.
+   For now the same blue tint as notes is enough to confirm the click. */
+g.beam[data-selected="true"],
+g.stem[data-selected="true"],
+g.flag[data-selected="true"],
+g.accid[data-selected="true"],
+g.dot[data-selected="true"],
+g.tuplet[data-selected="true"] {
+  fill:   #2563eb !important;
+  stroke: #2563eb !important;
 }
 /* Hide Verovio's built-in tie path — we draw our own MuseScore-style flat
    dome in page.tsx so the arc hugs the noteheads instead of dipping wide. */
 svg g.tie {
   display: none;
 }
-/* Custom tie selection tint — path is filled (lens shape), so tint the
-   fill, not the stroke. */
-path.custom-tie[data-selected="true"] {
+/* Hide Verovio's built-in slur path for the same reason — page.tsx draws
+   a thinner, shallower dome that better matches engraving convention. */
+svg g.slur {
+  display: none;
+}
+/* Custom tie / slur selection tint — paths are filled (lens shape), tint
+   the fill not the stroke. */
+path.custom-tie[data-selected="true"],
+path.custom-slur[data-selected="true"] {
   fill: #2563eb !important;
+}
+/* Hover affordance in selection mode. */
+.mode-select path.custom-slur:hover,
+.mode-select path.custom-tie:hover {
+  fill: #60a5fa;
 }

@@ -35,7 +35,7 @@ export default function EditorV2Page() {
     insertNote, insertRest, insertNoteAt, insertNoteAtBeat, insertRestAt,
     replaceAtIndex, deleteNotes, convertToRests, setBarline,
     changePitch, changeChordPitch, changeGracePitch, removeChordNote, addToChord, toggleArticulation, changeDuration, moveCursor,
-    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setTremolo, toggleWords,
+    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, setTremolo, toggleWords,
     setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
     toggleHairpin, toggleOctaveShift, togglePedal, setClefChange, setTimeSigChange,
@@ -62,7 +62,23 @@ export default function EditorV2Page() {
     relY: number;
     base: DurationBase;
     dots: 0 | 1 | 2 | 3;
+    /** Beat the snap chose (1-indexed for the user; 1 = first beat). Used
+     *  to render the "Beat N" tooltip + vertical guide line in note-input
+     *  mode so the user knows which beat their click will land on. */
+    beat: number;
+    /** Measure number, also for display. */
+    measureNumber: number;
+    /** Staff top/bottom Y in scroll-container coords — the snap guide
+     *  line spans only the active staff, not the whole page. */
+    staffTopY: number;
+    staffBottomY: number;
   } | null>(null);
+  // Last cursor position seen inside the score area. We keep it in a ref so
+  // releasing Space (pan tool) can resume the ghost preview at the exact
+  // pixel the user is hovering over — without it, after a pan the user
+  // would have to wiggle the mouse before the red preview reappears.
+  const lastMousePosRef = useRef<{ x: number; y: number } | null>(null);
+
   // Mirror ghost activity to the ref so onSvgRendered (with empty deps) can
   // read it without stale closure.
   useEffect(() => { ghostActiveRef.current = ghostSpec !== null; }, [ghostSpec]);
@@ -81,7 +97,7 @@ export default function EditorV2Page() {
   // How the current selection was set: 'typed' (auto-select after A-G / R /
   // ghost-commit — next A-G inserts the next note) vs 'user' (click or arrow
   // — next A-G edits the selected pitch / converts a selected rest to a note).
-  const selectionSourceRef = useRef<'typed' | 'user' | null>(null);
+  const selectionSourceRef = useRef<'typed' | 'user' | 'marquee' | null>(null);
   // Live score in a ref so callbacks with empty deps (onSvgRendered) still see
   // the latest state. Without this the verovio↔model mapping is built against
   // the initial (empty) score and ends up empty itself.
@@ -656,6 +672,10 @@ export default function EditorV2Page() {
 
   // ── Pan tool: Space-hold + drag scrolls the canvas (Figma-style) ─────────
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
+  // Ref mirror of isSpaceHeld so callbacks (onScoreMouseMove, etc.) can
+  // read it synchronously inside their stale closure — the state is async
+  // and won't update mid-event-dispatch otherwise.
+  const isSpaceHeldRef = useRef(false);
   const panStartRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const [isPanning, setIsPanning] = useState(false);
 
@@ -664,16 +684,40 @@ export default function EditorV2Page() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.code === 'Space' && !e.repeat) {
+        // Pan tool (hand cursor) works in ALL modes, including note-input.
+        // Drag-pan scrolls the canvas regardless of editor state — useful
+        // when zoomed in and the user wants to slide the page around
+        // without leaving Note Input. Ghost preview is suspended while
+        // Space is held (cursor: grab takes over visually).
+        isSpaceHeldRef.current = true;
         setIsSpaceHeld(true);
         e.preventDefault(); // stop page scroll
       }
     }
     function onUp(e: KeyboardEvent) {
       if (e.code === 'Space') {
+        // Sync the ref BEFORE the React state update so the synthetic
+        // mousemove dispatched below sees the new value through the ref.
+        isSpaceHeldRef.current = false;
         setIsSpaceHeld(false);
         // Also end any in-progress pan.
         panStartRef.current = null;
         setIsPanning(false);
+        // Resume the ghost preview at the mouse's current pixel — without
+        // this, the user has to wiggle the mouse before the red preview
+        // reappears after a pan. Dispatch a synthetic mousemove on the
+        // scroll container, which re-enters onScoreMouseMove with the
+        // last known cursor position; isSpaceHeld is already false by
+        // then so the ghost-compute branch runs normally.
+        const pos = lastMousePosRef.current;
+        const el = scoreScrollRef.current;
+        if (pos && el) {
+          el.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true,
+            clientX: pos.x,
+            clientY: pos.y,
+          }));
+        }
       }
     }
     window.addEventListener('keydown', onDown);
@@ -864,12 +908,52 @@ export default function EditorV2Page() {
       }
       const mode = useEditorStore.getState().mode;
 
+      // Direct click on a custom slur path → select it via synthetic
+      // composite id "slur|startId|endId". Lets the user grab the arc
+      // without grabbing a notehead first. Skip in note-input — clicks
+      // there should fall through to ghost-commit.
+      if (mode !== 'note-input') {
+        const slurEl = (e.target as Element | null)?.closest?.('path.custom-slur');
+        if (slurEl) {
+          const s = slurEl.getAttribute('data-slur-start');
+          const en = slurEl.getAttribute('data-slur-end');
+          if (s && en) {
+            const key = `slur|${s}|${en}`;
+            useEditorStore.getState().toggleSelection(key, e.shiftKey);
+            selectionSourceRef.current = 'user';
+            e.stopPropagation();
+            return;
+          }
+        }
+        // Same trick for ties — synthetic id "tie|startId|endId|pitch".
+        // Pitch is part of the key because chords can carry several ties
+        // (one per matched pitch) and the user should be able to grab
+        // each independently.
+        const tieEl = (e.target as Element | null)?.closest?.('path.custom-tie');
+        if (tieEl) {
+          const s = tieEl.getAttribute('data-tie-start');
+          const en = tieEl.getAttribute('data-tie-end');
+          const p = tieEl.getAttribute('data-tie-pitch');
+          if (s && en && p) {
+            const key = `tie|${s}|${en}|${p}`;
+            useEditorStore.getState().toggleSelection(key, e.shiftKey);
+            selectionSourceRef.current = 'user';
+            e.stopPropagation();
+            return;
+          }
+        }
+      }
+
       // Walk up looking for the most specific selectable. Rests count too —
       // users navigate them with ←/→ same as notes. `mRest` is Verovio's
       // class for whole-measure rests (the centred bar in empty bars); it has
       // no model id (the converter synthesises it), so we identify it by
       // composite key "mrest|partIdx|measureIdx" further down.
-      const itemRe = /\b(note|chord|rest|mRest)\b/;
+      // Selectable engraving primitives. Beam/stem/flag/accid/dot/tuplet
+      // are added so they read as standalone editable shapes (planned:
+      // vector handles for repositioning / resizing). Tie/slur are
+      // selectable via the existing span pass.
+      const itemRe = /\b(note|chord|rest|mRest|beam|stem|flag|accid|dot|tuplet)\b/;
       let noteHit:    Element | null = null;
       let staffHit:   Element | null = null;
       let el = e.target as Element | null;
@@ -1250,10 +1334,13 @@ export default function EditorV2Page() {
     }
 
     // Custom ties (path.custom-tie) — attrs carry model note ids directly,
-    // so we match on selection (note id OR composite key starting with it).
+    // so we match on selection (note id OR composite key starting with it,
+    // OR the synthetic "tie|startId|endId|pitch" key for direct click on
+    // the arc).
     svg.querySelectorAll('path.custom-tie').forEach((tie) => {
       const s = tie.getAttribute('data-tie-start');
       const e = tie.getAttribute('data-tie-end');
+      const p = tie.getAttribute('data-tie-pitch');
       const isNoteSelected = (id: string | null): boolean => {
         if (!id) return false;
         // Direct id, composite chord-note "id|N", or staff cascade (its
@@ -1269,10 +1356,40 @@ export default function EditorV2Page() {
         }
         return false;
       };
-      if (isNoteSelected(s) || isNoteSelected(e)) {
+      const tieKey = s && e && p ? `tie|${s}|${e}|${p}` : null;
+      const tieSelected = tieKey ? selectedIds.has(tieKey) : false;
+      if (tieSelected || isNoteSelected(s) || isNoteSelected(e)) {
         tie.setAttribute('data-selected', 'true');
       } else {
         tie.removeAttribute('data-selected');
+      }
+    });
+
+    // Custom slurs (path.custom-slur) — same rule as ties: highlight when
+    // either endpoint note is selected, OR when the slur itself is
+    // explicitly selected via the synthetic id "slur|startId|endId".
+    svg.querySelectorAll('path.custom-slur').forEach((slur) => {
+      const s = slur.getAttribute('data-slur-start');
+      const e = slur.getAttribute('data-slur-end');
+      const isNoteSelected = (id: string | null): boolean => {
+        if (!id) return false;
+        if (selectedIds.has(id)) return true;
+        for (const sel of selectedIds) {
+          if (sel.startsWith(`${id}|`)) return true;
+        }
+        const vId = modelToVerovioRef.current.get(id);
+        if (vId) {
+          const el = svg.getElementById(vId);
+          if (el && el.getAttribute('data-selected') === 'true') return true;
+        }
+        return false;
+      };
+      const slurKey = s && e ? `slur|${s}|${e}` : null;
+      const slurSelected = slurKey ? selectedIds.has(slurKey) : false;
+      if (slurSelected || isNoteSelected(s) || isNoteSelected(e)) {
+        slur.setAttribute('data-selected', 'true');
+      } else {
+        slur.removeAttribute('data-selected');
       }
     });
   }, [selectedIds, deferredXml, svgRenderTick]);
@@ -1402,9 +1519,15 @@ export default function EditorV2Page() {
                   const startClientX = sr.right - sr.width * 0.15;
                   const endClientX   = er.left  + er.width  * 0.15;
                   const dx = Math.max(1, endClientX - startClientX);
-                  // Deeper arc + control points pulled toward the centre →
-                  // continuous rounded dome instead of a flat-topped plateau.
-                  const depth = Math.min(noteH * 0.75, Math.max(noteH * 0.4, dx * 0.045));
+                  // Depth scales with span width. Floor (noteH * 0.15)
+                  // keeps tiny same-beat ties from collapsing to a line;
+                  // ceiling (noteH * 0.7) caps very long ties from
+                  // ballooning. Short ties stay shallow — they shouldn't
+                  // look as deep as long ones.
+                  const depth = Math.min(
+                    noteH * 0.7,
+                    Math.max(noteH * 0.15, dx * 0.05),
+                  );
                   const peakClientY = above
                     ? Math.min(startClientY, endClientY) - depth
                     : Math.max(startClientY, endClientY) + depth;
@@ -1421,7 +1544,13 @@ export default function EditorV2Page() {
 
                   const scale = ctm.a || 1;
                   const noteH_user = noteH / scale;
-                  const thickness = Math.max(noteH_user * 0.32, noteH_user * 0.24 + (b.x - a.x) * 0.004);
+                  // Tie thickness — engravers draw ties as a delicate
+                  // line that thickens slightly at the midpoint. Pulled
+                  // further down (was 0.18 / 0.13) for a finer crescent.
+                  const thickness = Math.max(
+                    noteH_user * 0.12,
+                    noteH_user * 0.08 + (b.x - a.x) * 0.0017,
+                  );
                   const outerPeakY = above ? peakSvg.y - thickness / 2 : peakSvg.y + thickness / 2;
                   const innerPeakY = above ? peakSvg.y + thickness / 2 : peakSvg.y - thickness / 2;
 
@@ -1437,7 +1566,9 @@ export default function EditorV2Page() {
                   } else {
                     path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
                     path.setAttribute('d', d);
-                    path.setAttribute('style', 'fill: #000; stroke: none; pointer-events: none;');
+                    // Allow pointer events so the tie can be clicked to
+                    // select it independently (synthetic id "tie|s|e|p").
+                    path.setAttribute('style', 'fill: #000; stroke: none; cursor: pointer;');
                     path.classList.add('custom-tie');
                     path.setAttribute('data-tie-start', pending.noteId);
                     path.setAttribute('data-tie-end', item.id);
@@ -1457,13 +1588,240 @@ export default function EditorV2Page() {
     existing.forEach((p, key) => { if (!keepKeys.has(key)) p.remove(); });
   }, []);
 
+  // ── Custom slurs: flat-dome arc instead of Verovio's wide bowl ────────────
+  //
+  // Same idea as renderCustomTies but a SINGLE slur spans many notes (not
+  // just same-pitch pairs). We walk each part linearly; when we hit a
+  // note with slurStart we remember it. When we later hit a note with
+  // slurEnd in the same part we draw ONE arc from the start note's
+  // attach-point to the end note's attach-point. The arc clears the
+  // intermediate notes by computing a peak Y that sits above the highest
+  // (or below the lowest) notehead in the span.
+  //
+  // Verovio's <g class="slur"> is hidden in globals.css so only our path
+  // shows. Path carries data-slur-start / data-slur-end so the selection
+  // effect can tint it.
+  const renderCustomSlurs = useCallback(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const ctm = svg.getScreenCTM?.();
+    if (!ctm) return;
+    const inv = ctm.inverse();
+    const toSvg = (clientX: number, clientY: number) => {
+      const pt = svg.createSVGPoint();
+      pt.x = clientX;
+      pt.y = clientY;
+      return pt.matrixTransform(inv);
+    };
+
+    // In-place update by `startId|endId` key — avoid delete+recreate flicker.
+    const existing = new Map<string, SVGPathElement>();
+    svg.querySelectorAll('path.custom-slur').forEach((p) => {
+      const s = p.getAttribute('data-slur-start');
+      const e = p.getAttribute('data-slur-end');
+      if (s && e) existing.set(`${s}|${e}`, p as SVGPathElement);
+    });
+    const keepKeys = new Set<string>();
+
+    // SVG-element bbox for a model note id. Returns:
+    //   • rect       — bbox of the notehead (or chord container)
+    //   • stemUp     — whether the stem points up
+    //   • stemTipY   — clientY of the stem's far end (the tip — the point
+    //                  AWAY from the notehead). Used when a slur attaches
+    //                  on the same side as the stem: engraving rule says
+    //                  the slur's endpoint sits at the stem tip, not at
+    //                  the notehead. When there's no stem (whole note),
+    //                  stemTipY falls back to the notehead's far edge.
+    const bboxFor = (modelId: string): { rect: DOMRect; stemUp: boolean; stemTipY: number } | null => {
+      const vId = modelToVerovioRef.current.get(modelId);
+      if (!vId) return null;
+      const el = svg.getElementById(vId) as SVGGElement | null;
+      if (!el) return null;
+      const chord = el.closest('g.chord') as SVGGElement | null;
+      const refEl = (chord ?? el) as SVGGElement;
+      const r = refEl.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return null;
+      const stemEl = refEl.querySelector('g.stem') as SVGGElement | null;
+      let stemUp = true;
+      let stemTipY = r.top;
+      if (stemEl) {
+        const stemR = stemEl.getBoundingClientRect();
+        const headCenter = (r.top + r.bottom) / 2;
+        const stemCenter = (stemR.top + stemR.bottom) / 2;
+        stemUp = stemCenter < headCenter;
+        // Stem tip = the END of the stem furthest from the notehead.
+        // For stem-up: tip is at the TOP of the stem rect.
+        // For stem-down: tip is at the BOTTOM.
+        stemTipY = stemUp ? stemR.top : stemR.bottom;
+      } else {
+        // Whole note / no stem — attach point is just the notehead's
+        // far edge on the slur's side; we'll resolve "side" later.
+        stemTipY = r.top;
+      }
+      return { rect: r, stemUp, stemTipY };
+    };
+
+    for (const part of scoreRef.current.parts) {
+      // Linear walk per part — slur can cross barlines.
+      let pending: { id: string; idx: number } | null = null;
+      let absIdx = 0;
+      const flat: Array<{ id: string; note: Note }> = [];
+      for (const m of part.measures) {
+        for (const n of m.notes) {
+          if (n.type === 'note') flat.push({ id: n.id, note: n });
+        }
+      }
+      for (let i = 0; i < flat.length; i++) {
+        const { id, note } = flat[i];
+        if (note.slurStart && !pending) pending = { id, idx: i };
+        if (pending && note.slurEnd && i > pending.idx) {
+          const startBox = bboxFor(pending.id);
+          const endBox = bboxFor(id);
+          if (startBox && endBox) {
+            // Decide above vs below: opposite of average stem direction.
+            // If most notes in span are stem-up → slur goes BELOW; else
+            // ABOVE. This matches engraving convention.
+            let stemUpCount = 0;
+            for (let k = pending.idx; k <= i; k++) {
+              const b = bboxFor(flat[k].id);
+              if (b?.stemUp) stemUpCount++;
+            }
+            const above = stemUpCount <= (i - pending.idx) / 2;
+
+            // Find the extreme Y across all notes in the span — the arc
+            // peak has to clear them. Use clientY from each note's bbox.
+            let extremeY = above ? Infinity : -Infinity;
+            for (let k = pending.idx; k <= i; k++) {
+              const b = bboxFor(flat[k].id);
+              if (!b) continue;
+              const y = above ? b.rect.top : b.rect.bottom;
+              if (above ? y < extremeY : y > extremeY) extremeY = y;
+            }
+            if (!isFinite(extremeY)) {
+              extremeY = above ? startBox.rect.top : startBox.rect.bottom;
+            }
+
+            const sr = startBox.rect;
+            const er = endBox.rect;
+            const noteH = sr.bottom - sr.top;
+
+            // ── Endpoint Y rule ──
+            // Same-side as stem  → attach at STEM TIP (far end of stem)
+            // Opposite of stem   → attach at NOTEHEAD outer edge
+            // No stem (whole)    → attach at notehead outer edge
+            //
+            // This is the engraving rule the user asked for: "должен
+            // заканчиваться на штиле, а не на середине штиля". When the
+            // slur sits above and the stem is up, the endpoint sits at
+            // the stem's top tip — not on the notehead, not on the
+            // mid-stem.
+            const attachY = (
+              box: { rect: DOMRect; stemUp: boolean; stemTipY: number },
+            ): number => {
+              const sameSide = above ? box.stemUp : !box.stemUp;
+              if (sameSide) {
+                // At the stem tip. Push outward by a hair so the curve
+                // doesn't visually touch the stem's terminal pixel.
+                return above
+                  ? box.stemTipY - noteH * 0.05
+                  : box.stemTipY + noteH * 0.05;
+              }
+              // Opposite side — attach at the notehead's far edge.
+              const r = box.rect;
+              return above
+                ? r.top - noteH * 0.15
+                : r.bottom + noteH * 0.15;
+            };
+
+            const startClientX = sr.left + sr.width * 0.5;
+            const endClientX = er.left + er.width * 0.5;
+            const startClientY = attachY(startBox);
+            const endClientY = attachY(endBox);
+
+            // ── Peak Y (symmetric, width-proportional) ──
+            // SYMMETRY: peak X is the midpoint of the span. Peak Y rises
+            // by `dome` above (or below) the endpoint-average Y.
+            // ROUNDNESS: depth scales with span width — SHORT slurs stay
+            // shallow, long slurs arch higher. A hard floor (noteH * 0.2)
+            // keeps very tiny spans visible without making them puffy.
+            // A ceiling (noteH * 1.6) prevents monster arches on very
+            // long phrases.
+            const dx = Math.abs(endClientX - startClientX);
+            const dome = Math.min(
+              noteH * 1.6,
+              Math.max(noteH * 0.2, dx * 0.13),
+            );
+            const avgEndpointY = (startClientY + endClientY) / 2;
+            // Make sure the peak still clears the highest/lowest note in
+            // the span — for very tall ranges the extreme matters more
+            // than the endpoint average.
+            const clearanceFromExtreme = above
+              ? extremeY - noteH * 0.55
+              : extremeY + noteH * 0.55;
+            const peakClientY = above
+              ? Math.min(avgEndpointY - dome, clearanceFromExtreme)
+              : Math.max(avgEndpointY + dome, clearanceFromExtreme);
+
+            const a = toSvg(startClientX, startClientY);
+            const b = toSvg(endClientX, endClientY);
+            const peakSvg = toSvg((startClientX + endClientX) / 2, peakClientY);
+            const totalDx = b.x - a.x;
+            // SYMMETRY: control points at 25 / 75 mirror around the
+            // midpoint, giving a perfectly symmetric Bézier.
+            const cp1x = a.x + totalDx * 0.25;
+            const cp2x = a.x + totalDx * 0.75;
+
+            const scale = ctm.a || 1;
+            const noteH_user = noteH / scale;
+            // Slurs slightly thinner than ties even at peak — the curve
+            // is longer so it'd read heavier at the same line weight.
+            const thickness = Math.max(
+              noteH_user * 0.11,
+              noteH_user * 0.075 + Math.abs(b.x - a.x) * 0.0017,
+            );
+            const outerPeakY = above
+              ? peakSvg.y - thickness / 2
+              : peakSvg.y + thickness / 2;
+            const innerPeakY = above
+              ? peakSvg.y + thickness / 2
+              : peakSvg.y - thickness / 2;
+
+            const d =
+              `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} ` +
+              `C ${cp1x.toFixed(2)} ${outerPeakY.toFixed(2)}, ${cp2x.toFixed(2)} ${outerPeakY.toFixed(2)}, ${b.x.toFixed(2)} ${b.y.toFixed(2)} ` +
+              `C ${cp2x.toFixed(2)} ${innerPeakY.toFixed(2)}, ${cp1x.toFixed(2)} ${innerPeakY.toFixed(2)}, ${a.x.toFixed(2)} ${a.y.toFixed(2)} Z`;
+            const key = `${pending.id}|${id}`;
+            keepKeys.add(key);
+            let path = existing.get(key);
+            if (path) {
+              path.setAttribute('d', d);
+            } else {
+              path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              path.setAttribute('d', d);
+              path.setAttribute('style', 'fill: #000; stroke: none; cursor: pointer;');
+              path.classList.add('custom-slur');
+              path.setAttribute('data-slur-start', pending.id);
+              path.setAttribute('data-slur-end', id);
+              svg.appendChild(path);
+            }
+          }
+          pending = null;
+        }
+        absIdx++;
+      }
+    }
+    existing.forEach((p, key) => { if (!keepKeys.has(key)) p.remove(); });
+  }, []);
+
   // Run synchronously after every Verovio render (svgRenderTick is bumped at
   // the end of onSvgRendered). We also invoke renderCustomTies INSIDE
   // onSvgRendered for the no-paint-flicker path; this effect is the safety
   // net for cases the inline call doesn't cover (e.g. selection re-renders).
   useEffect(() => {
     renderCustomTies();
-  }, [svgRenderTick, renderCustomTies]);
+    renderCustomSlurs();
+  }, [svgRenderTick, renderCustomTies, renderCustomSlurs]);
 
   // ── Ghost preview via Verovio: mouse → spec → MusicXML → engraved note. ──
 
@@ -1479,6 +1837,10 @@ export default function EditorV2Page() {
       return;
     }
 
+    // Track where the mouse is — used by the Space-release handler to
+    // resume the ghost preview at the right spot once pan ends.
+    lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+
     // In normal mode, also drive marquee selection if dragging.
     if (marqueeStartRef.current) onScoreMouseDrag(e);
 
@@ -1487,6 +1849,17 @@ export default function EditorV2Page() {
       if (cursorGhostPos) setCursorGhostPos(null);
       return;
     }
+    // While Space is held the user is panning, not editing — kill the
+    // ghost preview so the grab cursor reads cleanly and the ghost-note
+    // doesn't visually compete with the canvas drag. Read through the
+    // REF (not the React state) so the synthetic mousemove dispatched on
+    // Space-release sees the up-to-date value.
+    if (isSpaceHeldRef.current) {
+      if (ghostSpec) setGhostSpec(null);
+      if (cursorGhostPos) setCursorGhostPos(null);
+      return;
+    }
+
     const svg = svgRef.current;
     const measures = measuresRef.current;
     if (!svg || measures.length === 0) {
@@ -1602,7 +1975,13 @@ export default function EditorV2Page() {
     }
 
     // Convert cursor X to a beat in [0, measureBeats] and pick the nearest
-    // valid beat.
+    // valid beat. STICKY SNAP: if the previous frame chose a slot in this
+    // measure, give that slot a 40% slot-width "moat" — the cursor has to
+    // move past that buffer before we'll consider a different beat. Keeps
+    // the ghost from flickering between adjacent slots when the cursor
+    // hovers near a boundary, which is the #1 complaint about precision
+    // input. The moat shrinks for tiny slot widths so it never traps the
+    // user — a real cursor move always wins.
     const totalWidth = measure.rightX - measure.leftX;
     const leftSkip = measure.measureIndex === 0 ? totalWidth * 0.15 : totalWidth * 0.03;
     const rightSkip = totalWidth * 0.03;
@@ -1616,9 +1995,29 @@ export default function EditorV2Page() {
       const d = Math.abs(cursorBeat - vb);
       if (d < minDist) { minDist = d; snappedBeat = vb; }
     }
+
     // Slot encoding for commit: slotsTotal = ms-beats so commit beat
     // recovers snappedBeat with no rounding error.
     const slotsInMeasure = 10000;
+
+    // Apply X-snap hysteresis: stay on previous beat unless the cursor
+    // crossed half-way to a different valid beat. (Name avoids `prevSnap`
+    // which is already used above for the Y-axis pitch hysteresis.)
+    const slotSpacing = validBeats.length > 1
+      ? Math.abs(validBeats[1] - validBeats[0])
+      : measureBeats;
+    const stickyMoat = slotSpacing * 0.4;
+    const prevSlotSnap = prevSlotSnapRef.current;
+    if (prevSlotSnap && prevSlotSnap.measureIdx === measure.measureIndex) {
+      const prevBeat = (prevSlotSnap.slotIndex / slotsInMeasure) * measureBeats;
+      // Is the previous beat still a valid slot AND closer than the
+      // sticky threshold? Then keep it.
+      if (validBeats.some((vb) => Math.abs(vb - prevBeat) < 0.0001)
+          && Math.abs(cursorBeat - prevBeat) < stickyMoat) {
+        snappedBeat = prevBeat;
+      }
+    }
+
     const xSnap = { slotIndex: Math.round(snappedBeat / measureBeats * slotsInMeasure) };
     prevSlotSnapRef.current = { measureIdx: measure.measureIndex, slotIndex: xSnap.slotIndex };
 
@@ -1662,15 +2061,29 @@ export default function EditorV2Page() {
       const snappedClientX = usableLeftX + (snappedBeat / measureBeats) * usableWidth;
       const relX = snappedClientX - cRect.left + scrollEl.scrollLeft;
       const relY = ySnap.svgY - cRect.top + scrollEl.scrollTop;
+      const staffTopY = staff.topY - cRect.top + scrollEl.scrollTop;
+      const staffBottomY = staff.bottomY - cRect.top + scrollEl.scrollTop;
+      // 1-indexed beat for the user. snappedBeat is in 0-based quarter-note
+      // units (4/4: 0, 1, 2, 3 = beats 1, 2, 3, 4). Adding 1 makes it human.
+      const beat = snappedBeat + 1;
+      // measureIndex is 0-based; users count from 1.
+      const measureNumber = measure.measureIndex + 1;
       setCursorGhostPos((prev) => {
         if (
           prev &&
           Math.abs(prev.relX - relX) < 0.5 &&
           Math.abs(prev.relY - relY) < 0.5 &&
           prev.base === activeDuration &&
-          prev.dots === activeDots
+          prev.dots === activeDots &&
+          Math.abs(prev.beat - beat) < 0.01 &&
+          prev.measureNumber === measureNumber
         ) return prev;
-        return { relX, relY, base: activeDuration, dots: activeDots };
+        return {
+          relX, relY,
+          base: activeDuration, dots: activeDots,
+          beat, measureNumber,
+          staffTopY, staffBottomY,
+        };
       });
     }
   }, [mode, pendingAlter, ghostSpec, cursorGhostPos, score.metadata.timeSig, activeDuration, activeDots]);
@@ -1678,6 +2091,9 @@ export default function EditorV2Page() {
   const onScoreMouseLeave = useCallback(() => {
     setGhostSpec(null);
     setCursorGhostPos(null);
+    // Mouse left the canvas — don't try to resume the ghost here on
+    // Space-release; the user would have to wander back in first.
+    lastMousePosRef.current = null;
   }, []);
 
   // HTML overlay rectangles for selected measures, merged into a single box
@@ -1750,7 +2166,6 @@ export default function EditorV2Page() {
         }
         const unique = Array.from(new Set(noteIds));
         if (unique.length < 2) return false;
-        const positions: Array<{ partIdx: number; flatIdx: number }> = [];
         const flats: Array<Array<string>> = score.parts.map((p) => {
           const out: string[] = [];
           for (const m of p.measures) {
@@ -1758,28 +2173,41 @@ export default function EditorV2Page() {
           }
           return out;
         });
+        // Group by part, then verify consecutiveness within each part.
+        // Supports multi-staff marquee selections (treble + bass together).
+        const byPart = new Map<number, number[]>();
         for (const nid of unique) {
           let found = false;
           for (let p = 0; p < flats.length; p++) {
             const fi = flats[p].indexOf(nid);
-            if (fi >= 0) { positions.push({ partIdx: p, flatIdx: fi }); found = true; break; }
+            if (fi >= 0) {
+              if (!byPart.has(p)) byPart.set(p, []);
+              byPart.get(p)!.push(fi);
+              found = true;
+              break;
+            }
           }
           if (!found) return false;
         }
-        if (!positions.every(pos => pos.partIdx === positions[0].partIdx)) return false;
-        positions.sort((a, b) => a.flatIdx - b.flatIdx);
-        for (let i = 1; i < positions.length; i++) {
-          if (positions[i].flatIdx !== positions[i - 1].flatIdx + 1) return false;
+        for (const [, indices] of byPart) {
+          indices.sort((a, b) => a - b);
+          for (let i = 1; i < indices.length; i++) {
+            if (indices[i] !== indices[i - 1] + 1) return false;
+          }
         }
         return true;
       })();
 
+      // Marquee selections ALWAYS get a frame around what the user
+      // grabbed — even if the picks aren't contiguous in the model. Single
+      // click / Ctrl+click is a pointed selection and skips the frame.
+      const isMarquee = selectionSourceRef.current === 'marquee';
       const next: Array<{ left: number; top: number; width: number; height: number }> = [];
       for (const [, { rects, hasStaff }] of systemMap) {
-        // Draw a frame for STAFF/measure selections AND for contiguous note
-        // ranges (shift+click fill). Skip for single notes and scattered
-        // multi-select — the blue tint on noteheads communicates that.
-        if (!hasStaff && !isRange) continue;
+        // Draw a frame for: STAFF/measure selections, contiguous shift+click
+        // ranges, and any marquee drag. Skip for single notes and scattered
+        // multi-select via click — the blue tint on noteheads is enough.
+        if (!hasStaff && !isRange && !isMarquee) continue;
         const left   = Math.min(...rects.map((b) => b.left));
         const top    = Math.min(...rects.map((b) => b.top));
         const right  = Math.max(...rects.map((b) => b.right));
@@ -1885,14 +2313,16 @@ export default function EditorV2Page() {
 
       const ids = new Set<string>();
 
-      // Marquee picks up individual items only — notes / rests / chords whose
-      // notehead centre lies in the box. Whole-measure selection is reserved
-      // for click.
-      const items = svg.querySelectorAll('g.note, g.rest, g.chord');
-      items.forEach((el) => {
-        // Use the notehead's bbox when available (g.notehead is the actual
-        // ellipse). For rests / chords without a single notehead, fall back
-        // to the element's own bbox centre.
+      // Marquee picks up individual items — notes / rests / chords (by
+      // notehead centre) PLUS engraving primitives (beam, stem, flag,
+      // accid, dot, tuplet) by their bbox centre. Whole-measure selection
+      // is reserved for click.
+      //
+      // For the notehead pass we use g.notehead's bbox so a stem or beam
+      // poking down into the box doesn't accidentally trigger a note
+      // selection — the centre-in-box test stays on the actual head.
+      const heads = svg.querySelectorAll('g.note, g.rest, g.chord');
+      heads.forEach((el) => {
         const headEl = (el.querySelector('g.notehead') ?? el) as SVGGraphicsElement;
         const r = headEl.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return;
@@ -1905,13 +2335,38 @@ export default function EditorV2Page() {
         }
       });
 
+      // Engraving primitives — beams, stems, flags, accidentals, augmentation
+      // dots, tuplet brackets. Each is selectable independently so the user
+      // can grab a single beam without dragging across all its noteheads.
+      // We use the element's own bbox centre — a beam's centre tracks the
+      // midpoint of its angled segment, which is what the user aims at when
+      // marquee-selecting "this beam".
+      const primitives = svg.querySelectorAll(
+        'g.beam, g.stem, g.flag, g.accid, g.dot, g.tuplet',
+      );
+      primitives.forEach((el) => {
+        const gEl = el as SVGGElement;
+        if (!gEl.id) return;
+        const r = gEl.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        const cx = (r.left + r.right) / 2;
+        const cy = (r.top + r.bottom) / 2;
+        if (pointInBox(cx, cy)) {
+          const modelId = veroviToModelRef.current.get(gEl.id) ?? gEl.id;
+          ids.add(modelId);
+        }
+      });
+
       const additive = e.shiftKey || e.ctrlKey || e.metaKey;
       const next = additive
         ? new Set([...useEditorStore.getState().selectedIds, ...ids])
         : ids;
-      useEditorStore.getState().setSelectedIds(next);
-      selectionSourceRef.current = 'user';
+      // Set the source BEFORE dispatching to the store so the
+      // selectedMeasureBoxes useEffect (which reads this ref) sees
+      // 'marquee' the moment it re-runs in response to the new selection.
+      selectionSourceRef.current = 'marquee';
       wasMarqueeRef.current = true;
+      useEditorStore.getState().setSelectedIds(next);
     }
     marqueeStartRef.current = null;
     setMarquee(null);
@@ -1934,7 +2389,23 @@ export default function EditorV2Page() {
     // here so ghost-commit can replace/split the rest into the new note —
     // critical with the padded-measure model where every visual slot is a
     // g.rest and "click on empty space" no longer exists.
-    if (target.closest('g.note, g.chord')) return;
+    //
+    // EXCEPTION: the ghost preview is also a g.note (rendered red by Verovio
+    // via the color attribute). When the mouse sits directly on top of the
+    // ghost, the closest() match resolves to the ghost itself — without the
+    // explicit colour check below we'd refuse to commit, and the user has
+    // to inch the cursor sideways to make the click "take". That's exactly
+    // the bug the user hit. Walking up to the enclosing g.note/g.chord and
+    // looking at its color attribute lets us recognise the ghost and
+    // proceed with commit.
+    const hit = target.closest('g.note, g.chord');
+    if (hit) {
+      const isGhostHit =
+        ((hit as Element).getAttribute('color') ?? '').toLowerCase() === '#c0392b' ||
+        !!hit.querySelector('[color="#c0392b"], [fill="#c0392b"]');
+      if (!isGhostHit) return;
+      // It IS the ghost — fall through to commit.
+    }
 
     try {
       const ghostNote: Note = {
@@ -2293,6 +2764,31 @@ export default function EditorV2Page() {
         for (const id of ids) setStemDir(id, op.dir);
         return;
       }
+      case 'flip-stem': {
+        // For each selected note read its current stemDir from the live
+        // score and toggle. 'auto' (undefined) defaults to 'down' on first
+        // flip — Verovio's auto rules cover most cases as 'up', so 'down'
+        // is the productive first toggle. Re-press flips to 'up'.
+        const ids = collectSelectedNoteIds();
+        const live = scoreRef.current;
+        for (const id of ids) {
+          let cur: 'up' | 'down' | undefined;
+          outer: for (const part of live.parts) {
+            for (const m of part.measures) {
+              const n = m.notes.find((x) => x.id === id && x.type === 'note');
+              if (n && n.type === 'note') { cur = n.stemDir; break outer; }
+            }
+          }
+          const next: 'up' | 'down' = cur === 'up' ? 'down' : 'up';
+          setStemDir(id, next);
+        }
+        return;
+      }
+      case 'beam': {
+        const ids = collectSelectedNoteIds();
+        for (const id of ids) setBeam(id, op.mode);
+        return;
+      }
       case 'tremolo': {
         const ids = collectSelectedNoteIds();
         for (const id of ids) setTremolo(id, op.count);
@@ -2577,7 +3073,7 @@ export default function EditorV2Page() {
     }
   }, [
     collectSelectedNoteIds, toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, toggleWords,
-    setStemDir, setTremolo, changeDuration, insertRest, score, toggleArticulation,
+    setStemDir, setBeam, setTremolo, changeDuration, insertRest, score, toggleArticulation,
     convertToRests, setBarline, cursor.measureIndex,
     changePitch, changeChordPitch, setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
@@ -2754,6 +3250,25 @@ export default function EditorV2Page() {
               }}
             />
           ))}
+
+          {/* Beat snap guide — thin vertical line marking the snapped beat
+              the click will commit to. Visible only in note-input mode
+              while the ghost is tracking. No text badge — the line + ghost
+              colour are sufficient feedback (badge tested as too noisy). */}
+          {mode === 'note-input' && cursorGhostPos && (
+            <div
+              style={{
+                position: 'absolute',
+                left: cursorGhostPos.relX,
+                top: cursorGhostPos.staffTopY - 8,
+                width: 1,
+                height: (cursorGhostPos.staffBottomY - cursorGhostPos.staffTopY) + 16,
+                background: 'rgba(192, 57, 43, 0.55)',
+                pointerEvents: 'none',
+                zIndex: 5,
+              }}
+            />
+          )}
         </div>
 
         <RightSidebar />
