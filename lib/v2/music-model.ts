@@ -163,6 +163,12 @@ export interface Note {
     pitch: Pitch;
     kind: 'acciaccatura' | 'appoggiatura';
   }>;
+  /** Suppress the automatic grace→main slur. By default any note with
+   *  graceBefore[] gets a small slur from its first grace notehead to
+   *  the main notehead (standard engraving). Set true to remove just
+   *  the slur while keeping the grace notes. Toggled by clicking the
+   *  slur arc and pressing Delete. */
+  graceSlurDisabled?: boolean;
   /** Notehead shape override. Default = normal oval. "slash" / "slashed"
    *  draws a diagonal slash through the head (broken notehead — used for
    *  buzz rolls / unpitched / rhythmic notation). MusicXML <notehead>. */

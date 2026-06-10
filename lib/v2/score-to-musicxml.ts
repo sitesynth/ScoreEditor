@@ -293,8 +293,7 @@ function computeAutoBeams(
   //
   // Window for level-1 depends on the deepest duration in this measure:
   //   • maxLevel === 1 (only 8ths)           → 8th-rate window (2 beats in 4/4)
-  //   • maxLevel === 2 (16ths present)       → 16th-rate window (1 beat)
-  //   • maxLevel ≥ 3 (32nds or shorter)      → 8th-rate window (long primary)
+  //   • maxLevel ≥ 2 (16ths/32nds present)   → 16th-rate window (1 beat)
   //
   // PAIR-AND-CHAIN rule (1→flag, 2→pair, 3→pair+flag, 4→quad, …) applies
   // ONLY when maxLevel === 1 — that's the eighth-note typing aid the user
@@ -302,7 +301,13 @@ function computeAutoBeams(
   // in the window form one beam" — so 3 sixteenths in a beat give a
   // 3-beam, not 2-beam + flag.
   // User-facing rule (per user 2026-06-10): "16ths just split by 4."
-  const level1Yardstick: DurationBase = maxLevel >= 3 ? 'eighth' : (maxLevel === 2 ? '16th' : 'eighth');
+  //
+  // For 32nds (and shorter) the primary 8th-beam now spans ONE beat (not the
+  // old half-measure), so a beat of eight 32nds reads as a single continuous
+  // 8th-beam. The inner 16th/32nd beams break at the eighth-note subdivision
+  // (see phase 2), giving "two groups of 4 joined by one 8th beam" per the
+  // user's reference (2026-06-10).
+  const level1Yardstick: DurationBase = maxLevel >= 2 ? '16th' : 'eighth';
   const level1Window = beamGroupBeats(timeSigNum, timeSigDen, level1Yardstick);
   const applyPairAndChain = maxLevel === 1;
   const groups: Entry[][] = [];
@@ -325,7 +330,18 @@ function computeAutoBeams(
       pending = [];
     };
     for (const e of entries) {
-      if (e.id === '__break__') { flush(); curBgIdx = -1; continue; }
+      if (e.id === '__break__') {
+        // Don't UNCONDITIONALLY flush on a rest — that broke beam groups
+        // every time the padded-measure invariant inserted a tiny auto
+        // rest between two notes the user meant to be consecutive (e.g.
+        // 4+padded+4 thirty-seconds on one beat → 2 separate primary
+        // beams instead of one). Let the bgIdx-based flush below decide:
+        // if the NEXT beamable note lands in the SAME level-1 window as
+        // the current pending run, the run continues across the rest.
+        // Cross-window rests still implicitly close the run because the
+        // next note's bgIdx will differ.
+        continue;
+      }
       const bgIdx = Math.floor(e.offset / level1Window + 1e-9);
       if (bgIdx === curBgIdx) {
         pending.push(e);
@@ -348,7 +364,13 @@ function computeAutoBeams(
     // Higher levels — sub-divide the group's notes by the level's window.
     // Only notes whose duration supplies this level's stroke participate.
     for (let level = 2; level <= maxLevel; level++) {
-      const yardstick = beamYardstickForLevel(level);
+      // When 32nds (or shorter) are present, EVERY inner beam (16th, 32nd, …)
+      // breaks at the eighth-note subdivision (0.5 beat in 4/4). A beat of
+      // eight 32nds then renders as two groups of 4 — each group carrying its
+      // own 16th + 32nd beams — joined only by the single primary 8th beam.
+      // When the deepest note is a 16th, the 16th beam spans the whole beat
+      // (one group of 4), so we keep the per-level yardstick there.
+      const yardstick: DurationBase = maxLevel >= 3 ? '32nd' : beamYardstickForLevel(level);
       const win = beamGroupBeats(timeSigNum, timeSigDen, yardstick);
 
       // Walk the group, building sub-runs by window index. Notes that
@@ -511,7 +533,7 @@ function noteXml(
   const slurElements: string[] = [];
   if (item.slurStart) slurElements.push('<slur type="start" number="1"/>');
   if (item.slurEnd)   slurElements.push('<slur type="stop" number="1"/>');
-  if (item.graceBefore && item.graceBefore.length > 0) {
+  if (item.graceBefore && item.graceBefore.length > 0 && !item.graceSlurDisabled) {
     slurElements.push('<slur type="stop" number="2"/>');
   }
   const slurBlock = slurElements.join('');
@@ -579,7 +601,7 @@ function noteXml(
       const gAccXml = gp.alter !== 0 && gAccGlyph
         ? `<accidental>${gAccGlyph}</accidental>` : '';
       const slashAttr = g.kind === 'acciaccatura' ? ' slash="yes"' : '';
-      const gSlurXml = idx === 0
+      const gSlurXml = idx === 0 && !item.graceSlurDisabled
         ? `<notations><slur type="start" number="2"/></notations>` : '';
       graceXml += `<note xml:id="${g.id}">
   <grace${slashAttr}/>

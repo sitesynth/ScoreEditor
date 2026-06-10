@@ -48,6 +48,7 @@ export type ScoreAction =
   | { type: 'SET_DYNAMICS'; noteId: string; dynamics: string | null }
   | { type: 'SET_STEM_DIR'; noteId: string; dir: 'up' | 'down' | 'auto' }
   | { type: 'SET_BEAM'; noteId: string; mode: 'auto' | 'start' | 'continue' | 'end' | 'none' }
+  | { type: 'TOGGLE_GRACE_SLUR'; noteId: string }
   | { type: 'SET_TREMOLO'; noteId: string; count: number }
   | { type: 'TOGGLE_WORDS'; noteId: string; text: string }
   | { type: 'ADD_MEASURE' }
@@ -1118,6 +1119,24 @@ export function scoreReducer(state: ScoreState, action: ScoreAction): ScoreState
       return { ...hist, present: newScore, cursor: state.cursor };
     }
 
+    case 'TOGGLE_GRACE_SLUR': {
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const n = measure.notes.find(x => x.id === action.noteId && x.type === 'note');
+          if (n && n.type === 'note') {
+            if (n.graceSlurDisabled) delete n.graceSlurDisabled;
+            else n.graceSlurDisabled = true;
+            touched = true;
+          }
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
     case 'SET_TREMOLO': {
       const hist = saveHistory(state);
       const newScore = cloneScore(state.present);
@@ -1511,6 +1530,10 @@ export function useScore(initialScore?: Score) {
       dispatch({ type: 'SET_BEAM', noteId, mode }),
     [],
   );
+  const toggleGraceSlur = useCallback(
+    (noteId: string) => dispatch({ type: 'TOGGLE_GRACE_SLUR', noteId }),
+    [],
+  );
   const setTremolo = useCallback(
     (noteId: string, count: number) => dispatch({ type: 'SET_TREMOLO', noteId, count }),
     [],
@@ -1577,6 +1600,7 @@ export function useScore(initialScore?: Score) {
     setDynamics,
     setStemDir,
     setBeam,
+    toggleGraceSlur,
     setTremolo,
     toggleWords,
     changeDuration,

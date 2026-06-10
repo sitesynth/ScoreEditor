@@ -35,7 +35,7 @@ export default function EditorV2Page() {
     insertNote, insertRest, insertNoteAt, insertNoteAtBeat, insertRestAt,
     replaceAtIndex, deleteNotes, convertToRests, setBarline,
     changePitch, changeChordPitch, changeGracePitch, removeChordNote, addToChord, toggleArticulation, changeDuration, moveCursor,
-    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, setTremolo, toggleWords,
+    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, setTremolo, toggleWords, toggleGraceSlur,
     setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
     toggleHairpin, toggleOctaveShift, togglePedal, setClefChange, setTimeSigChange,
@@ -187,8 +187,15 @@ export default function EditorV2Page() {
         //   • plain note id → convert to rest (DELETE_NOTES)
         const noteIdsToDelete: string[] = [];
         const chordRemovals: Array<{ noteId: string; chordIdx: number }> = [];
+        const graceSlurToggles: string[] = [];
 
         for (const id of ids) {
+          // Synthetic key for grace slur — toggle off the auto-slur on
+          // the main note, keeping the grace notes themselves.
+          if (id.startsWith('graceSlur|')) {
+            graceSlurToggles.push(id.slice('graceSlur|'.length));
+            continue;
+          }
           // Chord-note composite key?
           const parts = id.split('|');
           if (parts.length === 2 && parts[1].match(/^\d+$/)) {
@@ -211,6 +218,7 @@ export default function EditorV2Page() {
 
         if (noteIdsToDelete.length > 0) deleteNotes(noteIdsToDelete);
         for (const cr of chordRemovals) removeChordNote(cr.noteId, cr.chordIdx);
+        for (const noteId of graceSlurToggles) toggleGraceSlur(noteId);
 
         store.clearSelection();
         e.preventDefault();
@@ -600,7 +608,7 @@ export default function EditorV2Page() {
     mode, activeDuration, activeDots, pendingAlter, cursor, score, selectedIds,
     insertNote, insertRest, deleteNotes, changePitch, changeChordPitch,
     changeGracePitch, addToChord, replaceAtIndex, removeChordNote,
-    moveCursor, undo, redo,
+    moveCursor, undo, redo, toggleGraceSlur,
   ]);
 
   // Force-focus the editor root on mount so keystrokes are immediately captured.
@@ -920,7 +928,12 @@ export default function EditorV2Page() {
           const s = slurEl.getAttribute('data-slur-start');
           const en = slurEl.getAttribute('data-slur-end');
           if (s && en) {
-            const key = `slur|${s}|${en}`;
+            // Grace slur uses a distinct synthetic key so Delete can
+            // route to TOGGLE_GRACE_SLUR (just hiding the slur, leaving
+            // grace notes intact). Regular slur uses TOGGLE_SLUR which
+            // wipes the slurStart/slurEnd flags.
+            const isGrace = slurEl.classList.contains('custom-slur-grace');
+            const key = isGrace ? `graceSlur|${en}` : `slur|${s}|${en}`;
             useEditorStore.getState().toggleSelection(key, e.shiftKey);
             selectionSourceRef.current = 'user';
             e.stopPropagation();
@@ -1386,7 +1399,10 @@ export default function EditorV2Page() {
         }
         return false;
       };
-      const slurKey = s && e ? `slur|${s}|${e}` : null;
+      const isGrace = slur.classList.contains('custom-slur-grace');
+      const slurKey = s && e
+        ? (isGrace ? `graceSlur|${e}` : `slur|${s}|${e}`)
+        : null;
       const slurSelected = slurKey ? selectedIds.has(slurKey) : false;
       if (slurSelected || isNoteSelected(s) || isNoteSelected(e)) {
         slur.setAttribute('data-selected', 'true');
@@ -1813,6 +1829,102 @@ export default function EditorV2Page() {
         absIdx++;
       }
     }
+
+    // ── Grace-note slurs ──
+    // Every note that carries graceBefore[] gets a small slur from its
+    // FIRST grace note's notehead to its own notehead. Engraving rule:
+    // grace-to-main slurs sit above by default, are thinner than regular
+    // slurs, and use the verovio chord/note mapping created in
+    // onSvgRendered (`${noteId}:grace:${idx}`).
+    for (const part of scoreRef.current.parts) {
+      for (const measure of part.measures) {
+        for (const item of measure.notes) {
+          if (item.type !== 'note') continue;
+          if (!item.graceBefore || item.graceBefore.length === 0) continue;
+          // User-disabled grace slur — skip rendering.
+          if (item.graceSlurDisabled) continue;
+          const firstGraceKey = `${item.id}:grace:0`;
+          const graceVId = modelToVerovioRef.current.get(firstGraceKey);
+          const mainVId = modelToVerovioRef.current.get(item.id);
+          if (!graceVId || !mainVId) continue;
+          const graceEl = svg.getElementById(graceVId) as SVGGElement | null;
+          const mainEl = svg.getElementById(mainVId) as SVGGElement | null;
+          if (!graceEl || !mainEl) continue;
+          const graceR = graceEl.getBoundingClientRect();
+          const mainR = mainEl.getBoundingClientRect();
+          if (graceR.width === 0 || mainR.width === 0) continue;
+
+          // Grace-to-main slur side follows the MAIN note's stem, OPPOSITE
+          // to it — same engraving convention as regular slurs:
+          //   • main stem UP   → slur BELOW (sits on the notehead side)
+          //   • main stem DOWN → slur ABOVE
+          // Grace noteheads are always stem-up, so the main note's rendered
+          // stem direction is the right signal. User-set 2026-06-10:
+          // "когда хвост ноты вверх → лига внизу; если хвост вниз → сверху".
+          const mainBox = bboxFor(item.id);
+          const above = mainBox ? !mainBox.stemUp : true;
+
+          const noteH = mainR.bottom - mainR.top;
+          const attachOffsetY = noteH * 0.12;
+          const startClientX = graceR.left + graceR.width * 0.5;
+          const endClientX = mainR.left + mainR.width * 0.5;
+          const startClientY = above
+            ? graceR.top - attachOffsetY
+            : graceR.bottom + attachOffsetY;
+          const endClientY = above
+            ? mainR.top - attachOffsetY
+            : mainR.bottom + attachOffsetY;
+          const avgY = (startClientY + endClientY) / 2;
+          const dx = Math.abs(endClientX - startClientX);
+          // Small dome — grace slurs are short and shallow.
+          const dome = Math.min(noteH * 0.9, Math.max(noteH * 0.18, dx * 0.18));
+          const peakClientY = above ? avgY - dome : avgY + dome;
+
+          const a = toSvg(startClientX, startClientY);
+          const b = toSvg(endClientX, endClientY);
+          const peakSvg = toSvg((startClientX + endClientX) / 2, peakClientY);
+          const totalDx = b.x - a.x;
+          const cp1x = a.x + totalDx * 0.25;
+          const cp2x = a.x + totalDx * 0.75;
+
+          const scale = ctm.a || 1;
+          const noteH_user = noteH / scale;
+          // Thinner than regular slur — grace marks are small details.
+          const thickness = Math.max(noteH_user * 0.08, noteH_user * 0.055);
+          const outerPeakY = above
+            ? peakSvg.y - thickness / 2
+            : peakSvg.y + thickness / 2;
+          const innerPeakY = above
+            ? peakSvg.y + thickness / 2
+            : peakSvg.y - thickness / 2;
+
+          const d =
+            `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} ` +
+            `C ${cp1x.toFixed(2)} ${outerPeakY.toFixed(2)}, ${cp2x.toFixed(2)} ${outerPeakY.toFixed(2)}, ${b.x.toFixed(2)} ${b.y.toFixed(2)} ` +
+            `C ${cp2x.toFixed(2)} ${innerPeakY.toFixed(2)}, ${cp1x.toFixed(2)} ${innerPeakY.toFixed(2)}, ${a.x.toFixed(2)} ${a.y.toFixed(2)} Z`;
+
+          const key = `${firstGraceKey}|${item.id}`;
+          keepKeys.add(key);
+          let path = existing.get(key);
+          if (path) {
+            path.setAttribute('d', d);
+          } else {
+            path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', d);
+            // Clickable so the user can select & delete it — even though
+            // the slur is auto-added by default, the user may want to
+            // remove it in some passages.
+            path.setAttribute('style', 'fill: #000; stroke: none; cursor: pointer;');
+            path.classList.add('custom-slur');
+            path.classList.add('custom-slur-grace');
+            path.setAttribute('data-slur-start', firstGraceKey);
+            path.setAttribute('data-slur-end', item.id);
+            svg.appendChild(path);
+          }
+        }
+      }
+    }
+
     existing.forEach((p, key) => { if (!keepKeys.has(key)) p.remove(); });
   }, []);
 

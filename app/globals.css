@@ -87,14 +87,18 @@ g.tuplet[data-selected="true"] {
   stroke: #2563eb !important;
 }
 /* Hide Verovio's built-in tie path — we draw our own MuseScore-style flat
-   dome in page.tsx so the arc hugs the noteheads instead of dipping wide. */
-svg g.tie {
-  display: none;
+   dome in page.tsx so the arc hugs the noteheads instead of dipping wide.
+   Uses attribute-substring selector so any class variant (tie tie-1, etc.)
+   is caught. */
+svg g[class*="tie"] {
+  display: none !important;
 }
-/* Hide Verovio's built-in slur path for the same reason — page.tsx draws
-   a thinner, shallower dome that better matches engraving convention. */
-svg g.slur {
-  display: none;
+/* Hide Verovio's built-in slur path for the same reason. Same attribute-
+   substring trick — Verovio sometimes emits "slur" as part of a longer
+   class like "slur number-2" for grace-to-main slurs. !important here
+   beats any inline style Verovio might emit. */
+svg g[class*="slur"] {
+  display: none !important;
 }
 /* Custom tie / slur selection tint — paths are filled (lens shape), tint
    the fill not the stroke. */
