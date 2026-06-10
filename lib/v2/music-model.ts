@@ -134,6 +134,11 @@ export interface Note {
    *  engraver "don't include me in any beam". Setting `start` forces a
    *  new beam group here (even mid-beat). */
   beam?: 'auto' | 'start' | 'continue' | 'end' | 'none';
+  /** "Start secondary beam" (Sibelius): a secondary beam starts at this note —
+   *  the SECONDARY (16th-and-finer) beams break before it while the PRIMARY
+   *  (8th) beam stays continuous through it. Used to show sub-groups under one
+   *  long beam (e.g. two groups of 4 sixteenths joined by a single 8th beam). */
+  secondaryBeamStart?: boolean;
   /** Tremolo slash count (1..5). 0 / undefined = no tremolo. */
   tremolo?: number;
   /** Free text directions ("pizz.", "arco", "sord.", "cresc.", "dim.",
@@ -208,6 +213,10 @@ export interface Rest {
   id: string;
   duration: Duration;
   tuplet?: TupletInfo;
+  /** "Stemlet": this rest sits INSIDE a beam group with the beam drawn over it
+   *  (a short stemlet stub), instead of breaking the beam. Set when a beamed
+   *  note is converted to a rest via the Stemlet button. */
+  stemlet?: boolean;
 }
 
 export type NoteOrRest = Note | Rest;

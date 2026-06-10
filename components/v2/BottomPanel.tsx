@@ -36,6 +36,12 @@ export type ToolbarOp =
    *  • end      — this note closes a beam group
    *  • none     — render with a flag, no beam */
   | { kind: 'beam'; mode: 'auto' | 'start' | 'continue' | 'end' | 'none' }
+  /** "Start secondary beam" — break the SECONDARY (16th+) beam at the selected
+   *  note while keeping the PRIMARY (8th) beam continuous through it. */
+  | { kind: 'secondary-beam' }
+  /** "Stemlet" — convert the selected beamed note into a rest with the beam
+   *  drawn over it (or toggle stemlet on a rest). */
+  | { kind: 'stemlet' }
   | { kind: 'tremolo'; count: number }
   /** Toggle a SET of atomic articulations together. Used for combination
    *  buttons (accent+staccato, tenuto+accent, …) — stacked marks aren't
@@ -734,8 +740,8 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
     row1: [
       // ── Group 1: Beam direction — start side (3) ──
       { icon: 'buttons/groups/startbeam.svg',          label: 'Begin beam',                group: 1, op: { kind: 'beam', mode: 'start' } },
-      { icon: 'buttons/groups/startsecondarybeam.svg', label: 'Start secondary beam',      group: 1 },
-      { icon: 'buttons/groups/stemlet.svg',            label: 'Stemlet (beam over rest)',  group: 1 },
+      { icon: 'buttons/groups/startsecondarybeam.svg', label: 'Start secondary beam',      group: 1, op: { kind: 'secondary-beam' } },
+      { icon: 'buttons/groups/stemlet.svg',            label: 'Stemlet (beam over rest)',  group: 1, op: { kind: 'stemlet' } },
       // ── Group 2: Tremolos 1-3 slashes (3) ──
       { icon: 'buttons/groups/2tremolos.svg',          label: 'Tremolo (1 slash)',         group: 2, op: { kind: 'tremolo', count: 1 } },
       { icon: 'buttons/groups/4tremolos.svg',          label: 'Tremolo (2 slash)',         group: 2, op: { kind: 'tremolo', count: 2 } },
@@ -763,7 +769,7 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
     row2: [
       // ── Group 1: Beam direction — end side (3) ──
       { icon: 'buttons/groups/endbeam.svg',            label: 'End beam',                   group: 1, op: { kind: 'beam', mode: 'end' } },
-      { icon: 'buttons/groups/middleofbeam.svg',       label: 'Continue beam',              group: 1, op: { kind: 'beam', mode: 'continue' } },
+      { icon: 'buttons/groups/middleofbeam.svg',       label: 'Middle of beam',             group: 1, op: { kind: 'beam', mode: 'continue' } },
       { icon: 'buttons/groups/nobeam.svg',             label: 'No beam (flag)',             group: 1, op: { kind: 'beam', mode: 'none' } },
       // ── Group 2: Tremolos 4-5 slashes + buzz roll (3) ──
       { icon: 'buttons/groups/16tremolos.svg',         label: 'Tremolo (4 slash)',          group: 2, op: { kind: 'tremolo', count: 4 } },

@@ -21,6 +21,9 @@ export interface GhostSpec {
   pitch: Pitch;
   base: DurationBase;
   dots: 0 | 1 | 2;
+  /** When true the ghost previews a REST (translucent rest at the slot), not a
+   *  pitched note. `pitch` is ignored. Committed via insertRestAtBeat. */
+  isRest?: boolean;
 }
 
 const GHOST_COLOR = '#c0392b';   // red — same as our Note Input accent
@@ -262,7 +265,13 @@ function computeAutoBeams(
 
   // Walk once to collect (id, base, offset) for every beamable note, plus
   // the deepest level present in this measure.
-  type Entry = { id: string; base: DurationBase; offset: number };
+  // `beam` carries the note's MANUAL beam override (Sibelius-style):
+  //   'start'    = Begin  → beam BREAKS before this note (it begins a group)
+  //   'end'      = End    → beam BREAKS after this note (it ends a group)
+  //   'continue' = Middle → forced beamed on BOTH sides
+  //   'none'     = No beam → detached (flag)
+  // Notes without an override beam by the automatic rules below.
+  type Entry = { id: string; base: DurationBase; offset: number; beam?: 'start' | 'continue' | 'end' | 'none'; secondaryBreak?: boolean };
   const entries: Entry[] = [];
   let maxLevel = 0;
   {
@@ -270,13 +279,18 @@ function computeAutoBeams(
     for (const item of notes) {
       const dur = itemBeats(item);
       const isNote = item.type === 'note';
-      const beamable =
-        isNote &&
-        BEAMABLE_DURATIONS[item.duration.base] &&
-        !(item as Note).beam;
+      // Manual-beam notes are now INCLUDED in grouping (previously excluded)
+      // so their override can re-link them coherently with neighbours instead
+      // of emitting an orphan beam tag. A STEMLET rest also participates in the
+      // beam (the beam is drawn over it) instead of breaking the group.
+      const isStemletRest = item.type === 'rest' && !!(item as Rest).stemlet;
+      const beamable = (isNote || isStemletRest) && BEAMABLE_DURATIONS[item.duration.base];
       if (beamable) {
-        const base = (item as Note).duration.base;
-        entries.push({ id: item.id, base, offset });
+        const base = item.duration.base;
+        const noteBeam = isNote ? (item as Note).beam : undefined;
+        const manual = noteBeam && noteBeam !== 'auto' ? noteBeam : undefined;
+        const secBreak = isNote ? (item as Note).secondaryBeamStart || undefined : undefined;
+        entries.push({ id: item.id, base, offset, beam: manual, secondaryBreak: secBreak });
         maxLevel = Math.max(maxLevel, BEAM_LEVELS[base]);
       } else {
         // Mark a break — sentinel with maxLevel=0 entry would complicate
@@ -310,7 +324,7 @@ function computeAutoBeams(
   const level1Yardstick: DurationBase = maxLevel >= 2 ? '16th' : 'eighth';
   const level1Window = beamGroupBeats(timeSigNum, timeSigDen, level1Yardstick);
   const applyPairAndChain = maxLevel === 1;
-  const groups: Entry[][] = [];
+  const defaultGroups: Entry[][] = [];
   {
     let pending: Entry[] = [];
     let curBgIdx = -1;
@@ -320,10 +334,10 @@ function computeAutoBeams(
         if (applyPairAndChain) {
           // Even count → all beamed. Odd → drop the trailing one (flagged).
           const beamed = n - (n % 2);
-          if (beamed >= 2) groups.push(pending.slice(0, beamed));
+          if (beamed >= 2) defaultGroups.push(pending.slice(0, beamed));
         } else {
           // Plain rule: every run of ≥ 2 forms one beam group.
-          groups.push(pending.slice());
+          defaultGroups.push(pending.slice());
         }
       }
       // n === 1 → not in any group (flagged), regardless of mode.
@@ -352,6 +366,44 @@ function computeAutoBeams(
       }
     }
     flush();
+  }
+
+  // ── PHASE 1b: apply MANUAL beam overrides on top of the auto grouping. ──
+  //
+  // Each note's `beam` marker forces a BREAK or a JOIN at the boundary with a
+  // neighbour; notes without a marker keep the automatic join. For the boundary
+  // between two consecutive beamable notes (prev, cur):
+  //   • BREAK (OFF) if prev says "end here" / "no beam" (break after prev) OR
+  //     cur says "begin here" / "no beam" (break before cur)  → break wins
+  //   • else JOIN (ON) if prev or cur is 'continue' (Middle)   → forced join
+  //   • else the automatic join (same default group)
+  // So Begin('start') splits BEFORE the note, End('end') splits AFTER it,
+  // Middle('continue') forces beaming, No-beam('none') isolates it. Re-forming
+  // runs from these links yields coherent begin/continue/end groups (no orphan
+  // tags). With NO manual markers every link == the auto join, so the output is
+  // byte-identical to the pure-auto grouping above.
+  const groupIdOf = new Map<string, number>();
+  defaultGroups.forEach((g, gi) => g.forEach(e => groupIdOf.set(e.id, gi)));
+  const bEntries = entries.filter(e => e.id !== '__break__');
+  const breakRight = (e: Entry) => e.beam === 'end' || e.beam === 'none';   // split AFTER e
+  const breakLeft = (e: Entry) => e.beam === 'start' || e.beam === 'none';  // split BEFORE e
+  const forceJoin = (e: Entry) => e.beam === 'continue';                    // Middle: beam both sides
+  const groups: Entry[][] = [];
+  {
+    let run: Entry[] = [];
+    for (let i = 0; i < bEntries.length; i++) {
+      const cur = bEntries[i];
+      if (i === 0) { run = [cur]; continue; }
+      const prev = bEntries[i - 1];
+      const defJoin = groupIdOf.has(prev.id) && groupIdOf.get(prev.id) === groupIdOf.get(cur.id);
+      let join: boolean;
+      if (breakRight(prev) || breakLeft(cur)) join = false;       // explicit break wins
+      else if (forceJoin(prev) || forceJoin(cur) || cur.secondaryBreak) join = true; // Middle / secondary-beam bridge the PRIMARY
+      else join = defJoin;
+      if (join) run.push(cur);
+      else { if (run.length >= 2) groups.push(run); run = [cur]; }
+    }
+    if (run.length >= 2) groups.push(run);
   }
 
   // ── PHASE 2: emit beam tags per group, per level. ──
@@ -393,7 +445,11 @@ function computeAutoBeams(
       for (const e of group) {
         const carries = BEAM_LEVELS[e.base] >= level;
         const bgIdx = carries ? Math.floor(e.offset / win + 1e-9) : -1;
-        if (carries && bgIdx === lastBgIdx) {
+        // "Start secondary beam" forces a SECONDARY (level ≥ 2) break before
+        // this note — the primary (level 1) beam already spans through it, so
+        // the result is a sub-group boundary under one continuous primary beam.
+        const forceBreak = !!e.secondaryBreak;
+        if (carries && bgIdx === lastBgIdx && !forceBreak) {
           subRun.push(e);
         } else {
           flushSub();
@@ -437,6 +493,13 @@ function noteXml(
   if (item.type === 'rest') {
     const restNotations = tupletNotationXml
       ? `<notations>${tupletNotationXml}</notations>` : '';
+    // Stemlet rest: emit the beam tags so Verovio draws the beam OVER the rest
+    // (computeAutoBeams includes stemlet rests in the group).
+    const restBeam = Array.isArray(autoBeam)
+      ? [...autoBeam].sort((a, b) => a.level - b.level)
+          .map(s => `<beam number="${s.level}">${s.mode === 'start' ? 'begin' : s.mode === 'continue' ? 'continue' : 'end'}</beam>`)
+          .join('')
+      : '';
     return `<note xml:id="${item.id}">
   <rest/>
   <duration>${dur}</duration>
@@ -444,6 +507,7 @@ function noteXml(
   <type>${type}</type>
   ${dots}
   ${timeModXml}
+  ${restBeam}
   ${restNotations}
 </note>`;
   }
@@ -573,14 +637,11 @@ function noteXml(
     m === 'start' ? 'begin' : m === 'continue' ? 'continue' : 'end';
 
   let beamXml = '';
-  if (item.beam && item.beam !== 'auto') {
-    // User override — always level 1.
-    if (item.beam === 'none') {
-      beamXml = '<beam number="1">begin</beam><beam number="1">end</beam>';
-    } else {
-      beamXml = `<beam number="1">${modeToTag(item.beam)}</beam>`;
-    }
-  } else if (Array.isArray(autoBeam)) {
+  // Manual beam overrides (item.beam) are no longer emitted directly here —
+  // computeAutoBeams folds them into the grouping and returns coherent
+  // multi-level statuses (see PHASE 1b), so a Begin/End/Middle note gets
+  // proper begin/continue/end tags and a No-beam note gets none (→ flag).
+  if (Array.isArray(autoBeam)) {
     // Multi-level auto. Sort by level so the renderer sees them in order.
     const sorted = [...autoBeam].sort((a, b) => a.level - b.level);
     for (const s of sorted) {
@@ -700,24 +761,24 @@ function notesForBeamingWithGhost(
   maxBeats: number,
 ): NoteOrRest[] {
   const ghostStartBeat = ghost.slotIndex * (maxBeats / ghost.slotsTotal);
-  const ghostNote: Note = {
-    type: 'note',
-    id: '__ghost__',
-    pitch: ghost.pitch,
-    duration: { base: ghost.base, dots: ghost.dots },
-  };
+  // A rest ghost inserts a REST into the virtual list so it BREAKS the beam at
+  // its slot (rests aren't beamable) — keeps neighbouring real-note beams
+  // stable in the preview. A note ghost inserts a beamable note.
+  const ghostItem: NoteOrRest = ghost.isRest
+    ? { type: 'rest', id: '__ghost__', duration: { base: ghost.base, dots: ghost.dots } }
+    : { type: 'note', id: '__ghost__', pitch: ghost.pitch, duration: { base: ghost.base, dots: ghost.dots } };
   const out: NoteOrRest[] = [];
   let offset = 0;
   let inserted = false;
   for (const n of notes) {
     if (!inserted && offset >= ghostStartBeat - 0.001) {
-      out.push(ghostNote);
+      out.push(ghostItem);
       inserted = true;
     }
     out.push(n);
     offset += itemBeats(n);
   }
-  if (!inserted) out.push(ghostNote);
+  if (!inserted) out.push(ghostItem);
   return out;
 }
 
@@ -761,7 +822,8 @@ function renderNotesXml(
       }
       prevTie = !!n.tieStart;
     } else {
-      out.push(noteXml(n, false));
+      // Rest — pass its beam status too (stemlet rests are beamed over).
+      out.push(noteXml(n, false, null, autoBeams.get(n.id)));
     }
   }
   return { xml: out.join('\n'), endingTie: prevTie };
@@ -881,6 +943,22 @@ function ghostNoteXml(
 </note>`;
 }
 
+/** XML for a ghost-preview REST — a translucent rest at the hovered beat slot.
+ *  Mirrors ghostNoteXml but emits <rest/> (no pitch, no beam — rests don't
+ *  beam). The ghost's `pitch` field is ignored for rests. */
+function ghostRestXml(g: GhostSpec): string {
+  const dur = durationDiv(g.base, g.dots);
+  const type = BASE_TO_TYPE[g.base];
+  const dots = '<dot/>'.repeat(g.dots);
+  return `<note color="${GHOST_COLOR}">
+  <rest/>
+  <duration>${dur}</duration>
+  <voice>1</voice>
+  <type>${type}</type>
+  ${dots}
+</note>`;
+}
+
 /** Right-side final barline for the last measure of the piece. */
 const FINAL_BARLINE = `<barline location="right"><bar-style>light-heavy</bar-style></barline>`;
 
@@ -921,13 +999,17 @@ function measureXml(
         )
       : undefined;
   const beamModeOf = (id: string) => beamMap?.get(id);
+  // Ghost render: a rest ghost emits a translucent <rest>, a note ghost the
+  // usual pitched note. Rests don't beam, so the beam mode is ignored for them.
+  const ghostXml = (g: GhostSpec, beam: ReturnType<typeof beamModeOf>) =>
+    g.isRest ? ghostRestXml(g) : ghostNoteXml(g, beam);
 
   if (notes.length === 0 && ghost) {
     // Empty measure: [rests before] [ghost] [rests after]
     const afterBeats = Math.max(0, maxBeats - ghostStartBeat - ghostBeats);
     const parts: string[] = [];
     if (ghostStartBeat > 0.001) parts.push(padRests(ghostStartBeat));
-    parts.push(ghostNoteXml(ghost, beamModeOf('__ghost__')));
+    parts.push(ghostXml(ghost, beamModeOf('__ghost__')));
     if (afterBeats > 0.001) parts.push(padRests(afterBeats));
     body = parts.join('\n');
   } else if (notes.length === 0) {
@@ -970,12 +1052,12 @@ function measureXml(
       // out of the output for the duration of the ghost.
       const items: string[] = notes.map((n, i) =>
         i === targetIndex
-          ? ghostNoteXml(ghost, beamModeOf('__ghost__'))
+          ? ghostXml(ghost, beamModeOf('__ghost__'))
           : noteXml(n, false, null, beamModeOf(n.id)),
       );
       body = items.join('\n');
     } else if (
-      ghost && targetIndex >= 0 && !targetIsRest && targetMatchesDuration
+      ghost && !ghost.isRest && targetIndex >= 0 && !targetIsRest && targetMatchesDuration
     ) {
       // Ghost stacks on an existing note → chord-addition preview. Only show
       // it when the ghost pitch isn't already part of that note's chord.
@@ -1011,7 +1093,7 @@ function measureXml(
             continue;
           }
           if (containingOffset > 0.001) items.push(padRests(containingOffset));
-          items.push(ghostNoteXml(ghost, beamModeOf('__ghost__')));
+          items.push(ghostXml(ghost, beamModeOf('__ghost__')));
           if (trailing > 0.001) items.push(padRests(trailing));
         }
         body = items.join('\n');
@@ -1031,7 +1113,7 @@ function measureXml(
       const afterBeats = Math.max(0, maxBeats - ghostStartBeat - ghostBeats);
       const parts: string[] = [itemsXml];
       if (gap > 0.001) parts.push(padRests(gap));
-      parts.push(ghostNoteXml(ghost, beamModeOf('__ghost__')));
+      parts.push(ghostXml(ghost, beamModeOf('__ghost__')));
       if (afterBeats > 0.001) parts.push(padRests(afterBeats));
       body = parts.join('\n');
     } else {

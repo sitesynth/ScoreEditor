@@ -81,10 +81,10 @@ export default function EditorV2Page() {
   // Score model + history
   const {
     score, cursor, canUndo, canRedo,
-    insertNote, insertRest, insertNoteAt, insertNoteAtBeat, insertRestAt,
+    insertNote, insertRest, insertNoteAt, insertNoteAtBeat, insertRestAt, insertRestAtBeat,
     replaceAtIndex, deleteNotes, convertToRests, setBarline,
     changePitch, changeChordPitch, changeGracePitch, removeChordNote, addToChord, toggleArticulation, changeDuration, moveCursor,
-    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, setTremolo, toggleWords, toggleGraceSlur,
+    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, toggleSecondaryBeam, toggleStemlet, setTremolo, toggleWords, toggleGraceSlur,
     setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
     toggleHairpin, toggleOctaveShift, togglePedal, setClefChange, setTimeSigChange,
@@ -377,6 +377,7 @@ export default function EditorV2Page() {
       // A-G — insert note with auto-octave (layout-independent via e.code)
       if (letter && 'abcdefg'.includes(letter) && !e.ctrlKey && !e.altKey && !e.metaKey) {
         store.enterNoteInput();
+        store.setRestMode(false);  // typing a pitch → note ghost, not rest
 
         // EDIT branch: user-selected note → change pitch; user-selected rest
         // → replace with note of same duration; user-selected chord-note
@@ -472,6 +473,7 @@ export default function EditorV2Page() {
       // R — rest
       if (letter === 'r' && !e.ctrlKey && !e.altKey) {
         store.enterNoteInput();
+        store.setRestMode(true);  // arm rest ghost — staff hover/click now places rests
         const rest: Rest = {
           type: 'rest',
           id: crypto.randomUUID(),
@@ -2237,7 +2239,13 @@ export default function EditorV2Page() {
       for (const item of measureModel.notes) {
         const ib = durationBeats(item.duration);
         if (item.type === 'rest') {
-          restRanges.push([beat, beat + ib]);
+          // MERGE adjacent rests into one insertable span — a longer note can
+          // consume several back-to-back rests (e.g. a half note dropped onto
+          // quarter+eighth+eighth rests). INSERT_NOTE_AT_BEAT then reshuffles
+          // the leftover rests around it.
+          const last = restRanges[restRanges.length - 1];
+          if (last && Math.abs(last[1] - beat) < 0.001) last[1] = beat + ib;
+          else restRanges.push([beat, beat + ib]);
         } else if (item.type === 'note' && Math.abs(ib - noteBeats) < 0.001) {
           noteStarts.push(beat);
         }
@@ -2324,6 +2332,9 @@ export default function EditorV2Page() {
       pitch: { midi: ghostMidi, alter },
       base: activeDuration,
       dots: activeDots,
+      // Rest-input mode → the ghost previews a rest (pitch ignored). Same beat
+      // snapping as notes ("по таким же правилам").
+      isRest: useEditorStore.getState().restMode || undefined,
     };
     // Only update state when the resolved spec actually changes — avoids
     // re-renders while the mouse stays inside a single slot.
@@ -2335,7 +2346,8 @@ export default function EditorV2Page() {
           prev.pitch.midi === next.pitch.midi &&
           prev.pitch.alter === next.pitch.alter &&
           prev.base === next.base &&
-          prev.dots === next.dots) return prev;
+          prev.dots === next.dots &&
+          !!prev.isRest === !!next.isRest) return prev;
       return next;
     });
 
@@ -2713,6 +2725,23 @@ export default function EditorV2Page() {
     }
 
     try {
+      // Rest ghost → commit a REST at the snapped beat (no chord-stacking).
+      if (ghostSpec.isRest) {
+        const rMeasureBeats = (4 * score.metadata.timeSig.num / score.metadata.timeSig.den);
+        const rGhostBeats = durationBeats({ base: ghostSpec.base, dots: ghostSpec.dots });
+        const rBeat = Math.max(0, Math.min(rMeasureBeats - rGhostBeats, ghostSpec.slotIndex / ghostSpec.slotsTotal * rMeasureBeats));
+        const ghostRest: Rest = { type: 'rest', id: crypto.randomUUID(), duration: { base: ghostSpec.base, dots: ghostSpec.dots } };
+        insertRestAtBeat(ghostSpec.partIndex, ghostSpec.measureIndex, rBeat, ghostRest);
+        useEditorStore.getState().setSelectedIds(new Set([ghostRest.id]));
+        selectionSourceRef.current = 'typed';
+        setGhostSpec(null);
+        setCursorGhostPos(null);
+        const pos = lastMousePosRef.current;
+        const el = scoreScrollRef.current;
+        if (pos && el) requestAnimationFrame(() => el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: pos.x, clientY: pos.y })));
+        return;
+      }
+
       const ghostNote: Note = {
         type: 'note',
         id: crypto.randomUUID(),
@@ -2817,6 +2846,7 @@ export default function EditorV2Page() {
   // so subsequent typed notes use this duration.
   const handleDurationClick = useCallback((d: DurationBase) => {
     const store = useEditorStore.getState();
+    store.setRestMode(false);  // picking a note duration → note ghost, not rest
     const sel = store.selectedIds;
     const targets: string[] = [];
     for (const idKey of sel) {
@@ -3034,6 +3064,7 @@ export default function EditorV2Page() {
         //   • Otherwise → insert a rest of the button's duration at the
         //     cursor and update activeDuration so subsequent typing matches.
         const store = useEditorStore.getState();
+        store.setRestMode(true);  // picking a rest → arm rest ghost on the staff
         const sel = store.selectedIds;
         const noteIdsToConvert: string[] = [];
         for (const idKey of sel) {
@@ -3056,16 +3087,13 @@ export default function EditorV2Page() {
           store.setActiveDuration(op.base);
           return;
         }
-        const rest: Rest = {
-          type: 'rest',
-          id: crypto.randomUUID(),
-          duration: { base: op.base, dots: 0 },
-        };
+        // Nothing selected → just ARM rest-ghost mode (set the duration, enter
+        // note-input). Do NOT auto-insert a rest anywhere — the user places it
+        // by clicking on the staff (red rest ghost). Matches note-duration
+        // buttons, which only set the active duration when nothing is selected.
         store.enterNoteInput();
         store.setActiveDuration(op.base);
-        insertRest(rest);
-        store.setSelectedIds(new Set([rest.id]));
-        selectionSourceRef.current = 'typed';
+        // restMode was already set true at the top of this case.
         return;
       }
       case 'ornament': {
@@ -3111,6 +3139,21 @@ export default function EditorV2Page() {
       case 'beam': {
         const ids = collectSelectedNoteIds();
         for (const id of ids) setBeam(id, op.mode);
+        return;
+      }
+      case 'secondary-beam': {
+        const ids = collectSelectedNoteIds();
+        for (const id of ids) toggleSecondaryBeam(id);
+        return;
+      }
+      case 'stemlet': {
+        // Acts on the selected note (→ stemlet rest) OR rest (toggle). Use raw
+        // ids so rests are included, not just notes.
+        const sel = useEditorStore.getState().selectedIds;
+        for (const idKey of sel) {
+          if (idKey.includes('|') || idKey.startsWith('mrest|')) continue;
+          toggleStemlet(idKey);
+        }
         return;
       }
       case 'tremolo': {

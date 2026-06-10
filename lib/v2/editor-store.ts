@@ -20,8 +20,12 @@ interface EditorUiState {
   activeDots: 0 | 1 | 2 | 3;
   pendingAlter: Alter;
   selectedIds: Set<string>;
+  /** When true, the staff ghost previews/commits RESTS instead of notes.
+   *  Armed by the R key / rest buttons; cleared by A-G / note-duration picks. */
+  restMode: boolean;
 
   setMode:           (m: EditorMode) => void;
+  setRestMode:       (b: boolean) => void;
   toggleNoteInput:   () => void;
   enterNoteInput:    () => void;
   exitNoteInput:     () => void;
@@ -39,8 +43,10 @@ export const useEditorStore = create<EditorUiState>((set) => ({
   activeDots:     0,
   pendingAlter:   0,
   selectedIds:    new Set(),
+  restMode:       false,
 
   setMode:           (m)    => set({ mode: m }),
+  setRestMode:       (b)    => set({ restMode: b }),
   toggleNoteInput:   ()     => set((s) => ({ mode: s.mode === 'note-input' ? 'normal' : 'note-input' })),
   // Note: do NOT clear `selectedIds` here. Pressing A-G with a user-selected
   // note must keep the selection so the keyboard handler can edit it instead

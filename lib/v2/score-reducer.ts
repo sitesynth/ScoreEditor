@@ -14,6 +14,7 @@ import {
 export type ScoreAction =
   | { type: 'INSERT_NOTE';   partIndex: number; measureIndex: number; noteIndex: number; note: Note }
   | { type: 'INSERT_NOTE_AT_BEAT'; partIndex: number; measureIndex: number; atBeat: number; note: Note }
+  | { type: 'INSERT_REST_AT_BEAT'; partIndex: number; measureIndex: number; atBeat: number; rest: Rest }
   | { type: 'INSERT_REST';   partIndex: number; measureIndex: number; noteIndex: number; rest: Rest }
   | { type: 'REPLACE_AT_INDEX'; partIndex: number; measureIndex: number; noteIndex: number; item: Note | Rest }
   | { type: 'DELETE_NOTES';  noteIds: string[] }
@@ -48,6 +49,8 @@ export type ScoreAction =
   | { type: 'SET_DYNAMICS'; noteId: string; dynamics: string | null }
   | { type: 'SET_STEM_DIR'; noteId: string; dir: 'up' | 'down' | 'auto' }
   | { type: 'SET_BEAM'; noteId: string; mode: 'auto' | 'start' | 'continue' | 'end' | 'none' }
+  | { type: 'TOGGLE_SECONDARY_BEAM'; noteId: string }
+  | { type: 'TOGGLE_STEMLET'; noteId: string }
   | { type: 'TOGGLE_GRACE_SLUR'; noteId: string }
   | { type: 'SET_TREMOLO'; noteId: string; count: number }
   | { type: 'TOGGLE_WORDS'; noteId: string; text: string }
@@ -253,6 +256,70 @@ export function scoreReducer(state: ScoreState, action: ScoreAction): ScoreState
       const noteIdx = newMeasure.notes.findIndex(n => n.id === note.id);
       let newMeasureIndex = measureIndex;
       let newNoteIndex = noteIdx >= 0 ? noteIdx + 1 : newMeasure.notes.length;
+      if (newNoteIndex >= newMeasure.notes.length) {
+        newMeasureIndex = measureIndex + 1;
+        newNoteIndex = 0;
+        if (newMeasureIndex >= newScore.parts[0].measures.length) {
+          const newNum = newScore.parts[0].measures.length + 1;
+          newScore.parts.forEach(p => p.measures.push(makeMeasure(newNum)));
+        }
+      }
+      return { ...hist, present: newScore, cursor: { partIndex, measureIndex: newMeasureIndex, noteIndex: newNoteIndex } };
+    }
+
+    case 'INSERT_REST_AT_BEAT': {
+      // Mirror of INSERT_NOTE_AT_BEAT — splits the containing rest/notes at
+      // `atBeat`, drops the rest in, pads the rest of the measure. Used by the
+      // rest-ghost click-commit (cursor placement on the staff).
+      const { partIndex, measureIndex, atBeat, rest } = action;
+      const timeSig = state.present.metadata.timeSig;
+      const measure = state.present.parts[partIndex]?.measures[measureIndex];
+      if (!measure) return state;
+      const maxBeats = beatsPerMeasure(timeSig);
+      const restBeats = durationBeats(rest.duration);
+      if (atBeat < -0.001 || atBeat + restBeats > maxBeats + 0.001) return state;
+
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      const newMeasure = newScore.parts[partIndex].measures[measureIndex];
+
+      if (newMeasure.notes.length === 0) {
+        const leading = makeRestsForBeats(Math.max(0, atBeat));
+        const trailing = makeRestsForBeats(Math.max(0, maxBeats - atBeat - restBeats));
+        newMeasure.notes = [...leading, rest, ...trailing];
+      } else {
+        let containingIdx = -1;
+        let containingStart = 0;
+        let beat = 0;
+        for (let i = 0; i < newMeasure.notes.length; i++) {
+          const ib = itemBeats(newMeasure.notes[i]);
+          if (atBeat < beat + ib - 0.001) { containingIdx = i; containingStart = beat; break; }
+          beat += ib;
+        }
+        if (containingIdx < 0) return state;
+        const beatOffset = atBeat - containingStart;
+        let endBeat = containingStart;
+        let lastConsumedIdx = containingIdx - 1;
+        while (
+          lastConsumedIdx + 1 < newMeasure.notes.length &&
+          endBeat < atBeat + restBeats - 0.001
+        ) {
+          lastConsumedIdx++;
+          endBeat += itemBeats(newMeasure.notes[lastConsumedIdx]);
+        }
+        if (endBeat < atBeat + restBeats - 0.001) return state;
+        const trailingBeats = endBeat - (atBeat + restBeats);
+        const leading = beatOffset > 0.001 ? makeRestsForBeats(beatOffset) : [];
+        const trailing = trailingBeats > 0.001 ? makeRestsForBeats(trailingBeats) : [];
+        newMeasure.notes.splice(containingIdx, lastConsumedIdx - containingIdx + 1, ...leading, rest, ...trailing);
+      }
+
+      const used = newMeasure.notes.reduce((s, n) => s + itemBeats(n), 0);
+      if (used < maxBeats - 0.001) newMeasure.notes.push(...makeRestsForBeats(maxBeats - used));
+
+      const restIdx = newMeasure.notes.findIndex(n => n.id === rest.id);
+      let newMeasureIndex = measureIndex;
+      let newNoteIndex = restIdx >= 0 ? restIdx + 1 : newMeasure.notes.length;
       if (newNoteIndex >= newMeasure.notes.length) {
         newMeasureIndex = measureIndex + 1;
         newNoteIndex = 0;
@@ -1119,6 +1186,51 @@ export function scoreReducer(state: ScoreState, action: ScoreAction): ScoreState
       return { ...hist, present: newScore, cursor: state.cursor };
     }
 
+    case 'TOGGLE_SECONDARY_BEAM': {
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const n = measure.notes.find(x => x.id === action.noteId && x.type === 'note');
+          if (n && n.type === 'note') {
+            if (n.secondaryBeamStart) delete n.secondaryBeamStart;
+            else n.secondaryBeamStart = true;
+            touched = true;
+          }
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
+    case 'TOGGLE_STEMLET': {
+      // Convert a beamed NOTE into a stemlet REST (beam drawn over it), or
+      // toggle the stemlet flag on an existing rest.
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const idx = measure.notes.findIndex(x => x.id === action.noteId);
+          if (idx < 0) continue;
+          const it = measure.notes[idx];
+          if (it.type === 'note') {
+            measure.notes[idx] = {
+              type: 'rest', id: it.id, duration: it.duration, stemlet: true,
+              ...(it.tuplet ? { tuplet: it.tuplet } : {}),
+            };
+            touched = true;
+          } else if (it.type === 'rest') {
+            if (it.stemlet) delete it.stemlet; else it.stemlet = true;
+            touched = true;
+          }
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
     case 'TOGGLE_GRACE_SLUR': {
       const hist = saveHistory(state);
       const newScore = cloneScore(state.present);
@@ -1400,6 +1512,11 @@ export function useScore(initialScore?: Score) {
       dispatch({ type: 'INSERT_NOTE_AT_BEAT', partIndex, measureIndex, atBeat, note }),
     [],
   );
+  const insertRestAtBeat = useCallback(
+    (partIndex: number, measureIndex: number, atBeat: number, rest: Rest) =>
+      dispatch({ type: 'INSERT_REST_AT_BEAT', partIndex, measureIndex, atBeat, rest }),
+    [],
+  );
   const insertRestAt = useCallback(
     (partIndex: number, measureIndex: number, noteIndex: number, rest: Rest) =>
       dispatch({ type: 'INSERT_REST', partIndex, measureIndex, noteIndex, rest }),
@@ -1530,6 +1647,14 @@ export function useScore(initialScore?: Score) {
       dispatch({ type: 'SET_BEAM', noteId, mode }),
     [],
   );
+  const toggleSecondaryBeam = useCallback(
+    (noteId: string) => dispatch({ type: 'TOGGLE_SECONDARY_BEAM', noteId }),
+    [],
+  );
+  const toggleStemlet = useCallback(
+    (noteId: string) => dispatch({ type: 'TOGGLE_STEMLET', noteId }),
+    [],
+  );
   const toggleGraceSlur = useCallback(
     (noteId: string) => dispatch({ type: 'TOGGLE_GRACE_SLUR', noteId }),
     [],
@@ -1567,6 +1692,7 @@ export function useScore(initialScore?: Score) {
     insertRest,
     insertNoteAt,
     insertNoteAtBeat,
+    insertRestAtBeat,
     insertRestAt,
     replaceAtIndex,
     deleteNotes,
@@ -1600,6 +1726,8 @@ export function useScore(initialScore?: Score) {
     setDynamics,
     setStemDir,
     setBeam,
+    toggleSecondaryBeam,
+    toggleStemlet,
     toggleGraceSlur,
     setTremolo,
     toggleWords,
