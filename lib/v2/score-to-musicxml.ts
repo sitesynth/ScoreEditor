@@ -493,14 +493,27 @@ function noteXml(
   // MusicXML uses kebab-case element names per articulation (accent,
   // staccato, tenuto, marcato, staccatissimo, accent-staccato, etc).
   const arts = item.articulations ?? [];
-  const fermatas = arts.filter(a => a === 'fermata' || a === 'fermata-short' || a === 'fermata-long');
-  const articulationsTags = arts.filter(a => !fermatas.includes(a));
+  // Fermata variants are <notations><fermata>SHAPE</fermata>, NOT
+  // <articulations> children. Each shape maps to a distinct SMuFL glyph
+  // (verified against Verovio 6.2):
+  //   fermata           → ''/normal     (E4C0)
+  //   fermata-short     → angled        (E4C4)
+  //   fermata-long      → square        (E4C6)
+  //   fermata-very-long → double-square (E4C8)
+  const FERMATA_SHAPE: Record<string, string> = {
+    'fermata': '',
+    'fermata-short': 'angled',
+    'fermata-long': 'square',
+    'fermata-very-long': 'double-square',
+  };
+  const fermatas = arts.filter(a => a in FERMATA_SHAPE);
+  const articulationsTags = arts.filter(a => !(a in FERMATA_SHAPE));
   const articulationsBlock = articulationsTags.length > 0
     ? `<articulations>${articulationsTags.map(a => `<${a}/>`).join('')}</articulations>`
     : '';
-  const fermataBlock = fermatas.length > 0
-    ? fermatas.map(() => '<fermata/>').join('')
-    : '';
+  const fermataBlock = fermatas
+    .map(a => (FERMATA_SHAPE[a] ? `<fermata>${FERMATA_SHAPE[a]}</fermata>` : '<fermata/>'))
+    .join('');
 
   // Ornaments (trill-mark, mordent, inverted-mordent, turn, inverted-turn) and
   // tremolo go inside <notations><ornaments>.

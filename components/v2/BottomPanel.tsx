@@ -688,9 +688,9 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
     ],
   },
   'Articulation': {
-    // Symmetric 5+5 / 3+3 / 3+3 layout — each group has the same number of
-    // buttons in row1 and row2. row1 = SIMPLE marks, row2 = COMBINED marks
+    // Layout 5+5 / 3+1 / 3+3 — row1 = SIMPLE marks, row2 = COMBINED marks
     // (where applicable), so reading vertically gives "atom → combo".
+    // (Group 2 row2 has just Harmonic since Mute on/off were removed.)
     row1: [
       // ── Group 1: Simple articulation marks (5) ──
       { icon: 'buttons/articulations/articStaccatoAbove.svg',       label: 'Staccato',            group: 1, articulation: 'staccato' },
@@ -714,10 +714,10 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       { icon: 'buttons/articulations/articAccentStaccatoAbove.svg', label: 'Accent + staccato',   group: 1, op: { kind: 'articulations', names: ['staccato', 'accent'] } },
       { icon: 'buttons/articulations/articMarcatoStaccatoAbove.svg',label: 'Marcato + staccato',  group: 1, op: { kind: 'articulations', names: ['staccato', 'strong-accent'] } },
       { icon: 'buttons/articulations/articMarcatoTenutoAbove.svg',  label: 'Marcato + tenuto',    group: 1, op: { kind: 'articulations', names: ['tenuto', 'strong-accent'] } },
-      // ── Group 2: Harmonic + mutes (3) ──
+      // ── Group 2: Harmonic (1) ──
+      // Mute on/off removed — no clean MusicXML/Verovio notation for them
+      // (they rendered nothing). Removed per user 2026-06-10.
       { icon: 'buttons/articulations/stringsHarmonic.svg',          label: 'Harmonic',            group: 2, articulation: 'harmonic' },
-      { icon: 'buttons/articulations/Mute on.svg',                  label: 'Mute on',             group: 2, articulation: 'mute-on' },
-      { icon: 'buttons/articulations/Mute off.svg',                 label: 'Mute off',            group: 2, articulation: 'mute-off' },
       // ── Group 3: Fermata variants (3) ──
       { icon: 'buttons/articulations/fermataShortAbove.svg',        label: 'Short fermata',       group: 3, articulation: 'fermata-short' },
       { icon: 'buttons/articulations/fermataLongAbove.svg',         label: 'Long fermata',        group: 3, articulation: 'fermata-long' },

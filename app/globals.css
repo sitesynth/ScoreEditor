@@ -86,6 +86,38 @@ g.tuplet[data-selected="true"] {
   fill:   #2563eb !important;
   stroke: #2563eb !important;
 }
+/* Individual notation marks attached to a note — click-selectable + deletable
+   in selection mode. The blue selected tint comes from the generic
+   g[data-selected="true"] rule above; here we add the pointer cursor + hover
+   so each mark (articulation, fermata, ornament, dynamics, tremolo,
+   breath/caesura) reads as individually grabbable. */
+.mode-select g.artic,
+.mode-select g.fermata,
+.mode-select g.dynam,
+.mode-select g.trill,
+.mode-select g.mordent,
+.mode-select g.turn,
+.mode-select g.ornam,
+.mode-select g.breath,
+.mode-select g.caesura,
+.mode-select g.bTrem,
+.mode-select g.fTrem {
+  cursor: pointer;
+}
+.mode-select g.artic:hover,
+.mode-select g.fermata:hover,
+.mode-select g.dynam:hover,
+.mode-select g.trill:hover,
+.mode-select g.mordent:hover,
+.mode-select g.turn:hover,
+.mode-select g.ornam:hover,
+.mode-select g.breath:hover,
+.mode-select g.caesura:hover,
+.mode-select g.bTrem:hover,
+.mode-select g.fTrem:hover {
+  fill:   #60a5fa;
+  stroke: #60a5fa;
+}
 /* Hide Verovio's built-in tie path — we draw our own MuseScore-style flat
    dome in page.tsx so the arc hugs the noteheads instead of dipping wide.
    Uses attribute-substring selector so any class variant (tie tie-1, etc.)

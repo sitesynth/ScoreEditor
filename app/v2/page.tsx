@@ -21,8 +21,57 @@ import {
   type StaffInfo, type MeasureBox,
 } from '@/lib/v2/staff-geometry';
 import { beatsPerMeasure, durationBeats } from '@/lib/v2/music-model';
+import { glyphToMark, CLASS_TO_ARTIC, MARK_GLYPHS, codepointOfMarkEl } from '@/lib/v2/smufl-marks';
 
 // ─── v2 editor (caret-based) ────────────────────────────────────────────────
+
+/** Nearest g.note / g.chord to a target client-X within `scope`, by horizontal
+ *  center. Used to find the note that a measure-level control-event mark
+ *  (fermata, ornament, dynamics, tremolo) belongs to — Verovio renders those
+ *  OUTSIDE the note's <g>, aligned above/below it, so X-proximity is the link.
+ *  Same getBoundingClientRect proximity technique already used for note hits
+ *  and tie/slur selection. Skips notes nested inside a chord (the chord is the
+ *  selectable unit). */
+function nearestNoteByCenterX(scope: ParentNode, cx: number): SVGGElement | null {
+  const cands: Array<{ el: SVGGElement; d: number }> = [];
+  scope.querySelectorAll('g.note, g.chord').forEach((c) => {
+    const el = c as SVGGElement;
+    if (el.classList.contains('note') && el.parentElement?.closest('g.chord')) return;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0) return;
+    cands.push({ el, d: Math.abs((r.left + r.right) / 2 - cx) });
+  });
+  if (cands.length === 0) return null;
+  return cands.reduce((a, b) => (b.d < a.d ? b : a)).el;
+}
+
+/** Build the synthetic selection key for a clicked / marquee'd notation-mark
+ *  <g> (articulation, fermata, ornament, dynamics, tremolo). Returns null if
+ *  the mark can't be resolved to a note. Shared by onSvgClick and the marquee
+ *  pass so both select marks identically:
+ *    artic|noteId|name · ornament|noteId|name · dynam|noteId · tremolo|noteId
+ *  Articulations live inside the note (closest); other marks are control
+ *  events outside g.staff → owning note found by X-proximity in the measure.
+ *  The specific mark is identified by SMuFL glyph codepoint (so one of several
+ *  artics resolves precisely), or by class for breath/caesura/dynam/tremolo. */
+function markKeyForElement(markEl: Element, svg: ParentNode, v2m: Map<string, string>): string | null {
+  let noteG = markEl.closest('g.note, g.chord') as SVGGElement | null;
+  if (!noteG) {
+    const r = markEl.getBoundingClientRect();
+    const scope = (markEl.closest('g.measure') as ParentNode | null) ?? svg;
+    noteG = nearestNoteByCenterX(scope, (r.left + r.right) / 2);
+  }
+  if (!noteG || !noteG.id) return null;
+  const noteId = (v2m.get(noteG.id) ?? noteG.id).split('|')[0];
+  const cls = markEl.getAttribute('class') ?? '';
+  if (/\bdynam\b/.test(cls)) return `dynam|${noteId}`;
+  if (/\b(bTrem|fTrem)\b/.test(cls)) return `tremolo|${noteId}`;
+  if (/\bbreath\b/.test(cls)) return `artic|${noteId}|${CLASS_TO_ARTIC.breath}`;
+  if (/\bcaesura\b/.test(cls)) return `artic|${noteId}|${CLASS_TO_ARTIC.caesura}`;
+  const cp = codepointOfMarkEl(markEl);
+  const mark = cp ? glyphToMark(cp) : null;
+  return mark ? `${mark.kind}|${noteId}|${mark.name}` : null;
+}
 
 export default function EditorV2Page() {
   const [zoom, setZoom] = useState(100);
@@ -194,6 +243,30 @@ export default function EditorV2Page() {
           // the main note, keeping the grace notes themselves.
           if (id.startsWith('graceSlur|')) {
             graceSlurToggles.push(id.slice('graceSlur|'.length));
+            continue;
+          }
+          // Individual notation marks attached to a note (click-selected
+          // glyph). Delete removes JUST that mark via the existing toggle/clear
+          // actions — the note itself stays. Keys: "artic|noteId|name",
+          // "ornament|noteId|name", "dynam|noteId", "tremolo|noteId".
+          if (id.startsWith('artic|')) {
+            const [, noteId, name] = id.split('|');
+            if (noteId && name) toggleArticulation(noteId, name);
+            continue;
+          }
+          if (id.startsWith('ornament|')) {
+            const [, noteId, name] = id.split('|');
+            if (noteId && name) toggleOrnament(noteId, name);
+            continue;
+          }
+          if (id.startsWith('dynam|')) {
+            const noteId = id.slice('dynam|'.length);
+            if (noteId) setDynamics(noteId, null);
+            continue;
+          }
+          if (id.startsWith('tremolo|')) {
+            const noteId = id.slice('tremolo|'.length);
+            if (noteId) setTremolo(noteId, 0);
             continue;
           }
           // Chord-note composite key?
@@ -957,6 +1030,47 @@ export default function EditorV2Page() {
             return;
           }
         }
+
+        // Direct click on an individual notation mark glyph (articulation,
+        // fermata, ornament, dynamics, tremolo) → select it via a synthetic
+        // key so Delete removes JUST that mark, not the note.
+        //
+        // Hit-testing: these glyphs are THIN (a fermata is a hollow arc), so an
+        // exact pixel hit usually lands on the transparent background and
+        // misses. We therefore (1) try the exact target, (2) detect a tremolo
+        // by its glyph — its <g class="bTrem"> WRAPS the note so matching the
+        // container would steal note clicks — then (3) accept a click landing
+        // within a few px of a control-event mark's bounding box.
+        const EXACT_MARK_SEL = 'g.artic, g.fermata, g.breath, g.caesura, g.dynam, g.trill, g.mordent, g.turn, g.ornam';
+        const PROX_MARK_SEL = 'g.fermata, g.breath, g.caesura, g.dynam, g.trill, g.mordent, g.turn, g.ornam';
+        let markEl: Element | null = (e.target as Element | null)?.closest?.(EXACT_MARK_SEL) ?? null;
+        if (!markEl) {
+          const useEl = (e.target as Element | null)?.closest?.('use');
+          const href = useEl ? (useEl.getAttribute('xlink:href') || useEl.getAttribute('href') || '') : '';
+          const cp = (href.match(/#([0-9A-Fa-f]{4})/) || [])[1];
+          if (cp && /^E22[0-4]$/i.test(cp)) markEl = useEl!.closest('g.bTrem, g.fTrem');
+        }
+        if (!markEl) {
+          const x = e.clientX, y = e.clientY, PAD = 4;
+          let bestD = Infinity;
+          svg.querySelectorAll(PROX_MARK_SEL).forEach((g) => {
+            const r = (g as SVGGElement).getBoundingClientRect();
+            if (r.width === 0) return;
+            const dx = Math.max(r.left - x, 0, x - r.right);
+            const dy = Math.max(r.top - y, 0, y - r.bottom);
+            const d = Math.hypot(dx, dy);
+            if (d <= PAD && d < bestD) { bestD = d; markEl = g; }
+          });
+        }
+        if (markEl) {
+          const key = markKeyForElement(markEl, svg, veroviToModelRef.current);
+          if (key) {
+            useEditorStore.getState().toggleSelection(key, e.shiftKey);
+            selectionSourceRef.current = 'user';
+            e.stopPropagation();
+            return;
+          }
+        }
       }
 
       // Walk up looking for the most specific selectable. Rests count too —
@@ -1410,6 +1524,49 @@ export default function EditorV2Page() {
         slur.removeAttribute('data-selected');
       }
     });
+
+    // Individual notation marks (click-selected glyphs). Keys:
+    // "artic|noteId|name", "ornament|noteId|name", "dynam|noteId",
+    // "tremolo|noteId". Articulations live inside the note; fermatas /
+    // ornaments / dynamics / tremolo are measure-level control events aligned
+    // above/below it. So we locate the matching mark in the note's staff
+    // nearest (by X) to the note — and for glyph marks also matching the SMuFL
+    // codepoint, so the right one of several lights up.
+    for (const sel of selectedIds) {
+      const bar = sel.indexOf('|');
+      if (bar < 0) continue;
+      const kind = sel.slice(0, bar);
+      if (kind !== 'artic' && kind !== 'ornament' && kind !== 'dynam' && kind !== 'tremolo') continue;
+      const [noteId, name] = sel.slice(bar + 1).split('|');
+      const vId = modelToVerovioRef.current.get(noteId);
+      const noteEl = vId ? svg.getElementById(vId) : null;
+      if (!noteEl) continue;
+      const nr = noteEl.getBoundingClientRect();
+      const noteCX = (nr.left + nr.right) / 2;
+      // Control events live in g.measure but OUTSIDE g.staff, so scope to the
+      // measure (not the staff) or the match won't be found.
+      const scope: ParentNode = (noteEl.closest('g.measure') as ParentNode | null) ?? svg;
+
+      let selector: string;
+      let cps: string[] | null = null;
+      if (kind === 'dynam') selector = 'g.dynam';
+      else if (kind === 'tremolo') selector = 'g.bTrem, g.fTrem';
+      else if (name === 'breath-mark') selector = 'g.breath';
+      else if (name === 'caesura') selector = 'g.caesura';
+      else { selector = 'g.artic, g.fermata, g.trill, g.mordent, g.turn, g.ornam'; cps = MARK_GLYPHS[name] ?? []; }
+
+      // Nearest matching mark to the note's X (its own mark sits at ~0; the
+      // tolerance guards against grabbing a neighbour's mark).
+      const cands: Array<{ el: Element; d: number }> = [];
+      scope.querySelectorAll(selector).forEach((g) => {
+        if (cps && cps.length > 0 && !cps.includes(codepointOfMarkEl(g) ?? '')) return;
+        const r = g.getBoundingClientRect();
+        if (r.width === 0) return;
+        cands.push({ el: g, d: Math.abs((r.left + r.right) / 2 - noteCX) });
+      });
+      const pick = cands.length ? cands.reduce((a, b) => (b.d < a.d ? b : a)) : null;
+      if (pick && pick.d < 60) pick.el.setAttribute('data-selected', 'true');
+    }
   }, [selectedIds, deferredXml, svgRenderTick]);
 
   // ── Custom ties: draw our own flat-dome curves over Verovio's wide arcs ──
@@ -2483,6 +2640,25 @@ export default function EditorV2Page() {
         if (pointInBox(cx, cy)) {
           const modelId = veroviToModelRef.current.get(gEl.id) ?? gEl.id;
           ids.add(modelId);
+        }
+      });
+
+      // Notation marks (articulation / fermata / ornament / dynamics) whose
+      // glyph centre lands in the box — same synthetic keys as a direct click,
+      // so a marquee drawn over (or just above) the notes also grabs their
+      // marks. bTrem/fTrem are skipped: their container wraps the note, so the
+      // note itself already covers them.
+      const markEls = svg.querySelectorAll(
+        'g.artic, g.fermata, g.breath, g.caesura, g.dynam, g.trill, g.mordent, g.turn, g.ornam',
+      );
+      markEls.forEach((el) => {
+        const r = (el as SVGGElement).getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        const cx = (r.left + r.right) / 2;
+        const cy = (r.top + r.bottom) / 2;
+        if (pointInBox(cx, cy)) {
+          const key = markKeyForElement(el, svg, veroviToModelRef.current);
+          if (key) ids.add(key);
         }
       });
 
