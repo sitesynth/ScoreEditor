@@ -882,12 +882,14 @@ export default function EditorV2Page() {
     veroviToModelRef.current = v2m;
     modelToVerovioRef.current = m2v;
     staffMapRef.current = staffMap;
-    // Re-add custom ties IN THIS SAME synchronous call — before the browser
-    // gets a chance to paint. Verovio just wiped them by overwriting
-    // <svg>.innerHTML; if we waited for the useEffect (next React commit),
-    // the user would see one paint with no ties → the flicker every
-    // keystroke.
+    // Re-add custom ties AND slurs IN THIS SAME synchronous call — before
+    // the browser gets a chance to paint. Verovio just wiped them by
+    // overwriting <svg>.innerHTML; if we waited for the useEffect (next
+    // React commit), the user would see one paint with no overlays → the
+    // flicker that shows up on every keystroke (slur visibly blinked every
+    // time the user typed a note).
     renderCustomTies();
+    renderCustomSlurs();
     // Tell visualization useEffects the mapping is fresh.
     setSvgRenderTick(t => t + 1);
 
@@ -1954,15 +1956,30 @@ export default function EditorV2Page() {
         validBeats.push(b);
       }
     } else {
+      // Build two lookup structures from the measure:
+      //   • restRanges — beat-spans of rests (where the ghost can INSERT)
+      //   • noteStarts — beat-positions of EXISTING notes whose duration
+      //     matches the ghost's. Snapping here triggers chord-stack
+      //     preview (see ghostChordOnlyXml path in measureXml) so the
+      //     user can add a pitch to an existing note as a chord.
       const restRanges: Array<[number, number]> = [];
+      const noteStarts: number[] = [];
       let beat = 0;
       for (const item of measureModel.notes) {
         const ib = durationBeats(item.duration);
-        if (item.type === 'rest') restRanges.push([beat, beat + ib]);
+        if (item.type === 'rest') {
+          restRanges.push([beat, beat + ib]);
+        } else if (item.type === 'note' && Math.abs(ib - noteBeats) < 0.001) {
+          noteStarts.push(beat);
+        }
         beat += ib;
       }
       for (let b = 0; b + noteBeats <= measureBeats + 0.001; b += noteBeats) {
-        if (restRanges.some(([s, e]) => b >= s - 0.001 && b + noteBeats <= e + 0.001)) {
+        const fitsInRest = restRanges.some(
+          ([s, e]) => b >= s - 0.001 && b + noteBeats <= e + 0.001,
+        );
+        const onMatchingNote = noteStarts.some((ns) => Math.abs(ns - b) < 0.001);
+        if (fitsInRest || onMatchingNote) {
           validBeats.push(b);
         }
       }
@@ -2482,6 +2499,25 @@ export default function EditorV2Page() {
       if (pendingAlter !== 0) useEditorStore.getState().setPendingAlter(0);
       setGhostSpec(null);
       setCursorGhostPos(null);
+
+      // Without this the user can't add a second note unless they wiggle
+      // the mouse — ghost stays null until the next mousemove fires. We
+      // dispatch a synthetic mousemove with the cursor's last known pixel
+      // so the preview reappears immediately (with the NEW score state,
+      // so the new ghost reflects the just-inserted note in its grid).
+      // Defer to next tick so the reducer commit + Verovio re-render
+      // settle first; measuresRef updates on the next onSvgRendered.
+      const pos = lastMousePosRef.current;
+      const el = scoreScrollRef.current;
+      if (pos && el) {
+        requestAnimationFrame(() => {
+          el.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true,
+            clientX: pos.x,
+            clientY: pos.y,
+          }));
+        });
+      }
     } catch (err) {
       console.error('[v2] click-commit failed', err);
     }
