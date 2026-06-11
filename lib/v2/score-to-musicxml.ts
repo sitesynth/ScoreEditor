@@ -1026,6 +1026,10 @@ function measureXml(
     let targetMatchesDuration = false;
     let containingIdx = -1;
     let containingOffset = 0;
+    // Contiguous run of rests covering the ghost — a half/longer ghost can span
+    // several padded rest pieces, so "fits inside one rest" isn't enough.
+    let restRunStart = -1, restRunStartBeat = 0, restRunEnd = -1, restRunEndBeat = 0;
+    let ghostFitsRestRun = false;
     if (ghost) {
       let beat = 0;
       for (let i = 0; i < notes.length; i++) {
@@ -1044,6 +1048,23 @@ function measureXml(
           break;
         }
         beat += ib;
+      }
+      // Find the rest run that both starts at/contains the ghost AND is long
+      // enough to hold the whole ghost duration.
+      let beat2 = 0, rs = -1, rsb = 0;
+      for (let i = 0; i < notes.length; i++) {
+        const ib = itemBeats(notes[i]);
+        if (notes[i].type === 'rest') {
+          if (rs === -1) { rs = i; rsb = beat2; }
+          if (ghostStartBeat >= rsb - 0.001 && ghostStartBeat + ghostBeats <= beat2 + ib + 0.001) {
+            restRunStart = rs; restRunStartBeat = rsb; restRunEnd = i; restRunEndBeat = beat2 + ib;
+            ghostFitsRestRun = true;
+            break;
+          }
+        } else {
+          rs = -1;
+        }
+        beat2 += ib;
       }
     }
 
@@ -1076,34 +1097,27 @@ function measureXml(
           : noteXml(n, false, null, beamModeOf(n.id));
       });
       body = items.join('\n');
-    } else if (
-      ghost && containingIdx >= 0 && notes[containingIdx].type === 'rest'
-    ) {
-      // Ghost falls INSIDE a rest of larger duration — split-render it as
-      // [leading rest, ghost, trailing rest]. The model still has one big
-      // rest; INSERT_NOTE will perform the real split on commit.
-      const target = notes[containingIdx];
-      const targetBeats = itemBeats(target);
-      const trailing = targetBeats - containingOffset - ghostBeats;
-      if (trailing >= -0.001) {
-        const items: string[] = [];
-        for (let i = 0; i < notes.length; i++) {
-          if (i !== containingIdx) {
-            items.push(noteXml(notes[i], false, null, beamModeOf(notes[i].id)));
-            continue;
-          }
-          if (containingOffset > 0.001) items.push(padRests(containingOffset));
+    } else if (ghost && ghostFitsRestRun) {
+      // Ghost lands in a RUN of one or more consecutive rests — split-render it
+      // as [leading rest, ghost, trailing rest], consuming the whole run. This
+      // covers a half/longer note that spans several padded rest pieces (which
+      // the old "fits inside ONE rest" check rejected, so the preview vanished
+      // even though the commit succeeds). The model keeps the rests; INSERT_NOTE
+      // performs the real split on commit.
+      const leading = ghostStartBeat - restRunStartBeat;
+      const trailing = restRunEndBeat - (ghostStartBeat + ghostBeats);
+      const items: string[] = [];
+      for (let i = 0; i < notes.length; i++) {
+        if (i < restRunStart || i > restRunEnd) {
+          items.push(noteXml(notes[i], false, null, beamModeOf(notes[i].id)));
+        } else if (i === restRunStart) {
+          if (leading > 0.001) items.push(padRests(leading));
           items.push(ghostXml(ghost, beamModeOf('__ghost__')));
           if (trailing > 0.001) items.push(padRests(trailing));
         }
-        body = items.join('\n');
-      } else {
-        // Ghost doesn't fit inside the rest — render normally.
-        const r = renderNotesXml(notes, initialPrevTie, timeSigNum, timeSigDen, beamMap);
-        endingTie = r.endingTie;
-        const remBeats = maxBeats - usedBeats;
-        body = remBeats > 0.001 ? r.xml + '\n' + padRests(remBeats) : r.xml;
+        // indices in (restRunStart, restRunEnd] are consumed by the run above
       }
+      body = items.join('\n');
     } else if (ghost && ghostStartBeat >= usedBeats - 0.001 && ghostStartBeat + ghostBeats <= maxBeats + 0.001) {
       // Ghost lands after existing items — preview an "append".
       const r = renderNotesXml(notes, initialPrevTie, timeSigNum, timeSigDen, beamMap);

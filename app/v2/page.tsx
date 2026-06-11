@@ -107,13 +107,14 @@ export default function EditorV2Page() {
   // scoreScrollRef content coords (post-scroll). Snapped Y comes from
   // staff-line snap; X follows the cursor directly.
   const [cursorGhostPos, setCursorGhostPos] = useState<{
+    /** Caret-line X (scroll coords) — marks the NEXT beat. */
     relX: number;
+    /** Note glyph CENTRE X (scroll coords) — tracks the cursor directly. */
+    noteRelX: number;
     relY: number;
     base: DurationBase;
     dots: 0 | 1 | 2 | 3;
-    /** Beat the snap chose (1-indexed for the user; 1 = first beat). Used
-     *  to render the "Beat N" tooltip + vertical guide line in note-input
-     *  mode so the user knows which beat their click will land on. */
+    /** Beat the snap chose (1-indexed for the user; 1 = first beat). */
     beat: number;
     /** Measure number, also for display. */
     measureNumber: number;
@@ -121,6 +122,12 @@ export default function EditorV2Page() {
      *  line spans only the active staff, not the whole page. */
     staffTopY: number;
     staffBottomY: number;
+    /** Half-steps from the top staff line (0 = top line, + = down). */
+    stepIndex: number;
+    /** One staff space in screen px (post-zoom) — sizes the shadow note. */
+    noteheadPx: number;
+    /** Accidental on the shadow note (matches pendingAlter). */
+    alter: -1 | 0 | 1;
   } | null>(null);
   // Last cursor position seen inside the score area. We keep it in a ref so
   // releasing Space (pan tool) can resume the ghost preview at the exact
@@ -128,12 +135,17 @@ export default function EditorV2Page() {
   // would have to wiggle the mouse before the red preview reappears.
   const lastMousePosRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Mirror ghost activity to the ref so onSvgRendered (with empty deps) can
-  // read it without stale closure.
+  // Mirror ghost activity + the full spec to refs so onSvgRendered (with empty
+  // deps) can read them. ghostSpecRef lets the render callback calibrate the
+  // beat it JUST engraved against that note's real X — no cursor/render lag,
+  // so the learned positions stay monotonic and every beat stays reachable.
   useEffect(() => { ghostActiveRef.current = ghostSpec !== null; }, [ghostSpec]);
+  const ghostSpecRef = useRef<GhostSpec | null>(null);
+  useEffect(() => { ghostSpecRef.current = ghostSpec; }, [ghostSpec]);
 
-  // Memoize MusicXML for Verovio — ghostSpec is passed so Verovio renders
-  // the preview note inline, with proper stems / ledger lines / spacing.
+  // Memoize MusicXML for Verovio — ghostSpec is passed so Verovio renders the
+  // preview as a REAL engraved red note. The calibrated snapping below pulls
+  // that note to the beat nearest the cursor.
   const musicXml = useMemo(() => scoreToMusicXml(score, ghostSpec), [score, ghostSpec]);
   // Defer Verovio re-render — rapid mouse moves / keystrokes batch.
   const deferredXml = useDeferredValue(musicXml);
@@ -152,6 +164,11 @@ export default function EditorV2Page() {
   // the initial (empty) score and ends up empty itself.
   const scoreRef = useRef(score);
   useEffect(() => { scoreRef.current = score; }, [score]);
+  // NOTE: we deliberately do NOT clear the beat calibration on score changes.
+  // The live self-calibration refreshes each beat's X as the ghost re-renders
+  // there, so positions self-heal after a commit. Wiping the whole map on every
+  // change made every just-placed note re-appear far from the cursor until the
+  // user swept the bar again ("калибровка опять сбилась").
   // While the ghost is on screen, freeze the staff geometry — Verovio's
   // re-render with the ghost note can subtly shift staff positions, which
   // breaks pitch hysteresis (the snap zone slides out from under the cursor).
@@ -828,6 +845,14 @@ export default function EditorV2Page() {
   // its centre. Resets when the active measure changes (different bar →
   // different slot axis).
   const prevSlotSnapRef = useRef<{ measureIdx: number; slotIndex: number } | null>(null);
+  // Learned "beat → real screen X" calibration, per `${partIdx}:${measureIdx}`.
+  // We can't know in advance where Verovio will engrave each beat (its spacing
+  // is non-linear, and an empty bar has no per-beat elements to measure), so we
+  // LEARN it: every frame we read the live ghost note's true X and remember it
+  // for the beat it's on. Snapping then maps the cursor to the beat whose REAL
+  // X is nearest — which is what keeps the note under the mouse. Cleared on any
+  // score change (a commit reflows the bar).
+  const beatCalibRef = useRef<Map<string, Map<number, number>>>(new Map());
   // Verovio ignores xml:id from MusicXML and generates its own (e.g. "i125kuo3"),
   // so we build a mapping ourselves by walking SVG measures × staves × notes
   // in parallel with our model.
@@ -845,12 +870,15 @@ export default function EditorV2Page() {
   const onSvgRendered = useCallback((svg: SVGSVGElement) => {
     svgRef.current = svg;
 
-    // Freeze geometry while a ghost note is on screen — the ghost's ledger
-    // lines (or width) can subtly shift staff positions between frames, and
-    // updating stavesRef/measuresRef while the cursor is anchored makes the
-    // pitch snap zone slide out from under the mouse. Mapping is still
-    // updated below so selection of the just-committed note still works.
-    if (!ghostActiveRef.current) {
+    // Geometry refreshes on EVERY render. The old "freeze while a ghost is up"
+    // guard caused the real bug the user hit: as you fill a bar with notes it
+    // widens, but the frozen rects stayed put, so the bar's right side (the last
+    // beat) drifted out of the stale geometry and the click stopped committing —
+    // until you moved to another bar (which dropped the ghost, unfreezing) and
+    // back. Staff Y stays stable because findStaves reads the 5 staff LINES (not
+    // a bbox that ledger lines inflate), and the pitch hysteresis below already
+    // compensates for any sub-pixel staff drift.
+    {
       const staves = findStaves(svg);
       stavesRef.current = staves;
       const measures = findMeasures(svg);
@@ -965,6 +993,32 @@ export default function EditorV2Page() {
     veroviToModelRef.current = v2m;
     modelToVerovioRef.current = m2v;
     staffMapRef.current = staffMap;
+
+    // Calibrate beat→X: the ghost we just engraved is, by construction, on the
+    // beat in ghostSpecRef — no cursor/render lag — so its real notehead X is a
+    // trustworthy anchor. The mousemove snapper reads these to place the note
+    // under the cursor and keep every beat reachable.
+    const gs = ghostSpecRef.current;
+    if (gs && !gs.isRest) {
+      const mEl = svg.querySelectorAll('g.measure')[gs.measureIndex] as SVGGElement | undefined;
+      const gEl = mEl?.querySelector('[color="#c0392b"]') ?? null;
+      const head = (gEl?.querySelector('g.notehead') ?? gEl) as SVGGElement | null;
+      const r = head?.getBoundingClientRect();
+      if (r && r.width > 0 && mEl) {
+        const ts = scoreRef.current.metadata.timeSig;
+        const mBeats = 4 * ts.num / ts.den;
+        const beat = (gs.slotIndex / gs.slotsTotal) * mBeats;
+        const key = `${gs.partIndex}:${gs.measureIndex}`;
+        let calib = beatCalibRef.current.get(key);
+        if (!calib) { calib = new Map(); beatCalibRef.current.set(key, calib); }
+        // Store the X RELATIVE to the bar's left edge. When a bar fills up it
+        // widens and pushes the following bars right; a relative offset rides
+        // along with that shift, so the calibration of later bars stays valid
+        // instead of going stale ("чем больше нот, тем сложнее в след. такте").
+        const measureLeft = mEl.getBoundingClientRect().left;
+        calib.set(Math.round(beat * 1000) / 1000, (r.left + r.right) / 2 - measureLeft);
+      }
+    }
     // Re-add custom ties AND slurs IN THIS SAME synchronous call — before
     // the browser gets a chance to paint. Verovio just wiped them by
     // overwriting <svg>.innerHTML; if we waited for the useEffect (next
@@ -2163,6 +2217,18 @@ export default function EditorV2Page() {
     }
     if (!measure) measure = findMeasureAtPoint(measures, cx, cy);
     if (!measure || measure.staves.length === 0) {
+      // measuresRef is frozen while the red ghost is on screen, but the bar
+      // reflows as the ghost moves (it widens it / shifts later bars), so the
+      // STALE rect can be slightly off — a cursor near a bar's right side (the
+      // 3rd / 4th beat) then falls just outside it and we'd bail, leaving
+      // ghostSpec null so the click commits NOTHING. That's the intermittent
+      // "то ставится, то нет". Retry once against FRESH geometry before giving
+      // up, so the target is still found.
+      const fresh = findMeasures(svg);
+      const m2 = findMeasureAtPoint(fresh, cx, cy);
+      if (m2 && m2.staves.length > 0) measure = m2;
+    }
+    if (!measure || measure.staves.length === 0) {
       if (ghostSpec) setGhostSpec(null);
       if (cursorGhostPos) setCursorGhostPos(null);
       return;
@@ -2277,37 +2343,130 @@ export default function EditorV2Page() {
     // input. The moat shrinks for tiny slot widths so it never traps the
     // user — a real cursor move always wins.
     const totalWidth = measure.rightX - measure.leftX;
-    const leftSkip = measure.measureIndex === 0 ? totalWidth * 0.15 : totalWidth * 0.03;
-    const rightSkip = totalWidth * 0.03;
-    const usableLeftX = measure.leftX + leftSkip;
-    const usableRightX = measure.rightX - rightSkip;
+    // Real note-area left edge: just right of the clef / key sig / time sig,
+    // read from the actual SVG (not a guessed "skip 15% of the bar"). Verovio
+    // only draws these in the first measure of a system; later measures have
+    // none, so we fall back to a small skip past the barline. The old guess
+    // was systematically wrong in measure 1 (clef + meter take a different
+    // fraction), which pushed mouse→beat off and made the ghost note land
+    // away from the cursor.
+    let sigRight = -Infinity;
+    measure.el
+      .querySelectorAll('g.clef, g.keySig, g.meterSig, g.mensur, g.timeSig')
+      .forEach((e) => {
+        const r = (e as SVGGElement).getBoundingClientRect();
+        if (r.width > 0 && r.right > sigRight) sigRight = r.right;
+      });
+    const usableLeftX = sigRight > -Infinity
+      ? sigRight + totalWidth * 0.02
+      : measure.leftX + totalWidth * 0.03;
+    const usableRightX = measure.rightX - totalWidth * 0.03;
     const usableWidth = Math.max(1, usableRightX - usableLeftX);
-    const cursorBeat = Math.max(0, Math.min(measureBeats, ((cx - usableLeftX) / usableWidth) * measureBeats));
+
+    // Map cursor X → beat. Prefer the REAL rendered positions of the bar's
+    // notes/rests as anchors — Verovio's horizontal spacing isn't linear, so
+    // interpolating between true element X's lands the ghost much closer to the
+    // cursor than a flat estimate. Notes sit at their onset; rests are centred
+    // in their span. Empty bars (just an mRest, no per-beat anchors) fall back
+    // to the linear estimate across the note area.
+    // Anchor "beat → screen X" to the REAL rendered geometry, then invert it to
+    // turn the cursor X into a beat. We seed two synthetic edge anchors (the
+    // note-area start/end) and refine them with:
+    //   • the true NOTEHEAD x of each existing note (rests anchor at their span
+    //     centre) — Verovio's horizontal spacing isn't linear;
+    //   • the live ghost note's own notehead — a SELF-CALIBRATING anchor that
+    //     pins the mapping to where Verovio actually drew the preview, so the
+    //     ghost converges under the cursor even in an empty bar.
+    // We read the NOTEHEAD (not the g.note bbox — the stem skews its centre
+    // rightward), which is what makes the note land on the cursor instead of a
+    // stem-width to its right.
+    const noteheadX = (el: Element): number | null => {
+      const head = el.querySelector('g.notehead') ?? el;
+      const r = (head as Element).getBoundingClientRect();
+      return r.width > 0 ? (r.left + r.right) / 2 : null;
+    };
+    const anchors: Array<{ beat: number; x: number }> = [
+      { beat: 0, x: usableLeftX },
+      { beat: measureBeats, x: usableRightX },
+    ];
+    const anchorMeasure = scoreRef.current.parts[staffIdx]?.measures[measure.measureIndex];
+    if (anchorMeasure) {
+      let ab = 0;
+      for (const it of anchorMeasure.notes) {
+        const ib = durationBeats(it.duration);
+        const elId = modelToVerovioRef.current.get(it.id);
+        const el = elId ? svg.getElementById(elId) : null;
+        const x = el ? noteheadX(el) : null;
+        if (x !== null) anchors.push({ beat: it.type === 'rest' ? ab + ib / 2 : ab, x });
+        ab += ib;
+      }
+    }
+    // Feed every LEARNED beat position (calibrated lag-free in onSvgRendered)
+    // back in as an anchor. Calibration is stored RELATIVE to the bar's left
+    // edge, so re-anchor it to the bar's current left — this is what keeps it
+    // valid after upstream bars fill up and push this bar sideways.
+    const slotsInMeasure = 10000;
+    const calib = beatCalibRef.current.get(`${staffIdx}:${measure.measureIndex}`);
+    if (calib) for (const [b, dx] of calib) anchors.push({ beat: b, x: measure.leftX + dx });
+
+    // Sort by beat, then keep a STRICTLY-INCREASING-X subsequence. Dropping
+    // (not flattening) out-of-order points avoids collapsing two beats onto the
+    // same X — which would make one of them impossible to land on. Same-beat
+    // duplicates prefer the later (calibrated / model) value over the rough edge.
+    anchors.sort((a, b) => a.beat - b.beat);
+    const mono: Array<{ beat: number; x: number }> = [];
+    for (const a of anchors) {
+      const last = mono[mono.length - 1];
+      if (last && Math.abs(a.beat - last.beat) < 1e-4) {
+        const floor = mono.length >= 2 ? mono[mono.length - 2].x : -Infinity;
+        if (a.x > floor) last.x = a.x;
+      } else if (!last || a.x > last.x) {
+        mono.push({ beat: a.beat, x: a.x });
+      }
+    }
+    const beatToX = (beat: number): number => {
+      if (mono.length === 0) return usableLeftX;
+      if (beat <= mono[0].beat) return mono[0].x;
+      if (beat >= mono[mono.length - 1].beat) return mono[mono.length - 1].x;
+      for (let i = 0; i < mono.length - 1; i++) {
+        if (beat >= mono[i].beat && beat <= mono[i + 1].beat) {
+          const span = mono[i + 1].beat - mono[i].beat;
+          const t = span > 0 ? (beat - mono[i].beat) / span : 0;
+          return mono[i].x + t * (mono[i + 1].x - mono[i].x);
+        }
+      }
+      return mono[mono.length - 1].x;
+    };
+
+    // Typical beat spacing in px (for hysteresis + edge-zone widening).
+    const slotSpacingPx = validBeats.length > 1
+      ? Math.max(1, Math.abs(beatToX(validBeats[1]) - beatToX(validBeats[0])))
+      : usableWidth;
+
+    // Snap to the valid beat whose REAL screen X is nearest the cursor — this is
+    // what keeps the note under the mouse even though Verovio spaces beats
+    // non-linearly. The FIRST and LAST valid beats get a widened catch zone:
+    // in narrow bars beat 1 renders right on the barline, so its natural zone is
+    // only a few px and was nearly impossible to land on ("не могу попасть на
+    // первую долю"). The bonus pulls those beats in from a bit further away.
+    const edgeBonus = slotSpacingPx * 0.35;
     let snappedBeat = validBeats[0];
     let minDist = Infinity;
-    for (const vb of validBeats) {
-      const d = Math.abs(cursorBeat - vb);
-      if (d < minDist) { minDist = d; snappedBeat = vb; }
+    for (let i = 0; i < validBeats.length; i++) {
+      let d = Math.abs(beatToX(validBeats[i]) - cx);
+      if (i === 0 || i === validBeats.length - 1) d -= edgeBonus;
+      if (d < minDist) { minDist = d; snappedBeat = validBeats[i]; }
     }
 
-    // Slot encoding for commit: slotsTotal = ms-beats so commit beat
-    // recovers snappedBeat with no rounding error.
-    const slotsInMeasure = 10000;
-
-    // Apply X-snap hysteresis: stay on previous beat unless the cursor
-    // crossed half-way to a different valid beat. (Name avoids `prevSnap`
-    // which is already used above for the Y-axis pitch hysteresis.)
-    const slotSpacing = validBeats.length > 1
-      ? Math.abs(validBeats[1] - validBeats[0])
-      : measureBeats;
-    const stickyMoat = slotSpacing * 0.4;
+    // X-snap hysteresis, in PIXELS: keep the previous beat until the cursor
+    // crosses ~20% of the way to a neighbouring beat — stops flicker at slot
+    // boundaries without trapping the cursor.
+    const stickyMoatPx = slotSpacingPx * 0.2;
     const prevSlotSnap = prevSlotSnapRef.current;
     if (prevSlotSnap && prevSlotSnap.measureIdx === measure.measureIndex) {
       const prevBeat = (prevSlotSnap.slotIndex / slotsInMeasure) * measureBeats;
-      // Is the previous beat still a valid slot AND closer than the
-      // sticky threshold? Then keep it.
       if (validBeats.some((vb) => Math.abs(vb - prevBeat) < 0.0001)
-          && Math.abs(cursorBeat - prevBeat) < stickyMoat) {
+          && Math.abs(cx - beatToX(prevBeat)) < stickyMoatPx) {
         snappedBeat = prevBeat;
       }
     }
@@ -2356,8 +2515,18 @@ export default function EditorV2Page() {
     const scrollEl = scoreScrollRef.current;
     if (scrollEl) {
       const cRect = scrollEl.getBoundingClientRect();
-      const snappedClientX = usableLeftX + (snappedBeat / measureBeats) * usableWidth;
-      const relX = snappedClientX - cRect.left + scrollEl.scrollLeft;
+      // The Verovio ghost NOTE sits on the snapped beat — where the mouse
+      // points. The caret LINE marks the NEXT beat ("сюда встанет следующая
+      // нота"), drawn at that beat's REAL position (beatToX) so it lands one
+      // beat to the RIGHT of the note, not at a linear guess.
+      const lineBeat = Math.min(measureBeats, snappedBeat + noteBeats);
+      const lineClientX = beatToX(lineBeat);
+      const relX = lineClientX - cRect.left + scrollEl.scrollLeft;
+      // The NOTE glyph tracks the cursor directly (clamped to the note area so
+      // it never slides onto the clef / off the bar). This is what puts the
+      // note exactly under the mouse — "там, куда указывает мышь".
+      const noteClientX = Math.max(usableLeftX, Math.min(usableRightX, cx));
+      const noteRelX = noteClientX - cRect.left + scrollEl.scrollLeft;
       const relY = ySnap.svgY - cRect.top + scrollEl.scrollTop;
       const staffTopY = staff.topY - cRect.top + scrollEl.scrollTop;
       const staffBottomY = staff.bottomY - cRect.top + scrollEl.scrollTop;
@@ -2366,21 +2535,28 @@ export default function EditorV2Page() {
       const beat = snappedBeat + 1;
       // measureIndex is 0-based; users count from 1.
       const measureNumber = measure.measureIndex + 1;
+      const ghostAlter: -1 | 0 | 1 = alter === 1 ? 1 : alter === -1 ? -1 : 0;
       setCursorGhostPos((prev) => {
         if (
           prev &&
           Math.abs(prev.relX - relX) < 0.5 &&
+          Math.abs(prev.noteRelX - noteRelX) < 0.5 &&
           Math.abs(prev.relY - relY) < 0.5 &&
           prev.base === activeDuration &&
           prev.dots === activeDots &&
+          prev.stepIndex === ySnap.stepIndex &&
+          prev.alter === ghostAlter &&
           Math.abs(prev.beat - beat) < 0.01 &&
           prev.measureNumber === measureNumber
         ) return prev;
         return {
-          relX, relY,
+          relX, noteRelX, relY,
           base: activeDuration, dots: activeDots,
           beat, measureNumber,
           staffTopY, staffBottomY,
+          stepIndex: ySnap.stepIndex,
+          noteheadPx: staff.lineSpacing,
+          alter: ghostAlter,
         };
       });
     }
@@ -3618,10 +3794,7 @@ export default function EditorV2Page() {
             />
           ))}
 
-          {/* Beat snap guide — thin vertical line marking the snapped beat
-              the click will commit to. Visible only in note-input mode
-              while the ghost is tracking. No text badge — the line + ghost
-              colour are sufficient feedback (badge tested as too noisy). */}
+          {/* Caret line — marks the NEXT beat ("сюда встанет следующая нота"). */}
           {mode === 'note-input' && cursorGhostPos && (
             <div
               style={{
@@ -3630,7 +3803,7 @@ export default function EditorV2Page() {
                 top: cursorGhostPos.staffTopY - 8,
                 width: 1,
                 height: (cursorGhostPos.staffBottomY - cursorGhostPos.staffTopY) + 16,
-                background: 'rgba(192, 57, 43, 0.55)',
+                background: 'rgba(192, 57, 43, 0.45)',
                 pointerEvents: 'none',
                 zIndex: 5,
               }}
