@@ -473,6 +473,7 @@ function noteXml(
   prevHadTieStart: boolean = false,
   priorAlterInMeasure: number | null = null,
   autoBeam?: BeamLevelStatus[] | 'start' | 'continue' | 'end' | 'none',
+  betweenTrem?: { start?: number; stop?: number },
 ): string {
   const dur = itemDurationDiv(item);
   const type = BASE_TO_TYPE[item.duration.base];
@@ -582,8 +583,19 @@ function noteXml(
   // Ornaments (trill-mark, mordent, inverted-mordent, turn, inverted-turn) and
   // tremolo go inside <notations><ornaments>.
   const orns = item.ornaments ?? [];
-  const tremoloXml = item.tremolo && item.tremolo > 0
-    ? `<tremolo type="single">${Math.min(5, item.tremolo)}</tremolo>` : '';
+  // Between-note tremolo (start on this note / stop carried from the previous
+  // note) takes precedence; a stop is emitted before a start when a note both
+  // ends and begins one. Single-note tremolo / buzz roll only when there's no
+  // between-note tremolo on this note.
+  let tremoloXml = '';
+  if (betweenTrem?.stop != null) tremoloXml += `<tremolo type="stop">${betweenTrem.stop}</tremolo>`;
+  if (betweenTrem?.start != null) tremoloXml += `<tremolo type="start">${betweenTrem.start}</tremolo>`;
+  if (!tremoloXml) {
+    tremoloXml = item.buzz
+      ? '<tremolo type="unmeasured">0</tremolo>'   // buzz roll — "z" on the stem
+      : item.tremolo && item.tremolo > 0
+        ? `<tremolo type="single">${Math.min(5, item.tremolo)}</tremolo>` : '';
+  }
   const ornamentsTags = orns.map(o => `<${o}/>`).join('');
   const ornamentsBlock = (ornamentsTags || tremoloXml)
     ? `<ornaments>${ornamentsTags}${tremoloXml}</ornaments>` : '';
@@ -641,14 +653,19 @@ function noteXml(
   // computeAutoBeams folds them into the grouping and returns coherent
   // multi-level statuses (see PHASE 1b), so a Begin/End/Middle note gets
   // proper begin/continue/end tags and a No-beam note gets none (→ flag).
+  // Feathered beam: the note that STARTS the group carries `feathered`; we put
+  // the MusicXML `fan` attribute on its primary (level-1) begin beam.
+  const fan = item.type === 'note' && item.feathered ? item.feathered : null;
+  const fanAttr = (level: number, mode: 'start' | 'continue' | 'end') =>
+    fan && level === 1 && mode === 'start' ? ` fan="${fan}"` : '';
   if (Array.isArray(autoBeam)) {
     // Multi-level auto. Sort by level so the renderer sees them in order.
     const sorted = [...autoBeam].sort((a, b) => a.level - b.level);
     for (const s of sorted) {
-      beamXml += `<beam number="${s.level}">${modeToTag(s.mode)}</beam>`;
+      beamXml += `<beam number="${s.level}"${fanAttr(s.level, s.mode)}>${modeToTag(s.mode)}</beam>`;
     }
   } else if (autoBeam === 'start' || autoBeam === 'continue' || autoBeam === 'end') {
-    beamXml = `<beam number="1">${modeToTag(autoBeam)}</beam>`;
+    beamXml = `<beam number="1"${fanAttr(1, autoBeam)}>${modeToTag(autoBeam)}</beam>`;
   }
   // autoBeam === 'none' or undefined → no beam tag (flag).
 
@@ -798,6 +815,7 @@ function renderNotesXml(
   // map covers real-notes + ghost together) or computed from `notes` alone.
   const autoBeams = externalBeams ?? computeAutoBeams(notes, timeSigNum, timeSigDen);
   const out: string[] = [];
+  let prevItem: NoteOrRest | null = null;
   for (const n of notes) {
     if (n.type === 'note') {
       // Inline clef / time-sig change must precede the <direction> tags and
@@ -809,7 +827,13 @@ function renderNotesXml(
       const so = pitchToStepOctave(n.pitch);
       const key = `${so.step}${so.octave}`;
       const prior = measureAcc.has(key) ? measureAcc.get(key)! : null;
-      out.push(noteXml(n, prevTie, prior, autoBeams.get(n.id)));
+      // Between-note tremolo: this note STARTS one if it carries tremoloBetween,
+      // and STOPS one if the immediately-previous note carried it.
+      const betweenTrem = {
+        start: n.tremoloBetween,
+        stop: prevItem && prevItem.type === 'note' ? prevItem.tremoloBetween : undefined,
+      };
+      out.push(noteXml(n, prevTie, prior, autoBeams.get(n.id), betweenTrem));
       // Update map with the alter THIS note carries forward to the rest of
       // the measure (the alter actually displayed, which is `so.alter`).
       measureAcc.set(key, so.alter);
@@ -825,6 +849,7 @@ function renderNotesXml(
       // Rest — pass its beam status too (stemlet rests are beamed over).
       out.push(noteXml(n, false, null, autoBeams.get(n.id)));
     }
+    prevItem = n;
   }
   return { xml: out.join('\n'), endingTie: prevTie };
 }

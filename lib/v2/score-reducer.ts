@@ -53,6 +53,9 @@ export type ScoreAction =
   | { type: 'TOGGLE_STEMLET'; noteId: string }
   | { type: 'TOGGLE_GRACE_SLUR'; noteId: string }
   | { type: 'SET_TREMOLO'; noteId: string; count: number }
+  | { type: 'SET_BUZZ'; noteId: string }
+  | { type: 'SET_TREMOLO_BETWEEN'; noteId: string; count: number }
+  | { type: 'SET_FEATHERED'; noteId: string; dir: 'accel' | 'rit' | null }
   | { type: 'TOGGLE_WORDS'; noteId: string; text: string }
   | { type: 'ADD_MEASURE' }
   | { type: 'LOAD_SCORE';    score: Score }
@@ -1263,6 +1266,86 @@ export function scoreReducer(state: ScoreState, action: ScoreAction): ScoreState
             } else {
               n.tremolo = action.count;
             }
+            delete n.buzz;   // measured tremolo and buzz roll are exclusive
+            touched = true;
+          }
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
+    case 'SET_BUZZ': {
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const n = measure.notes.find(x => x.id === action.noteId && x.type === 'note');
+          if (n && n.type === 'note') {
+            if (n.buzz) {
+              delete n.buzz;            // toggle off
+            } else {
+              n.buzz = true;
+              delete n.tremolo;         // exclusive with measured tremolo
+            }
+            touched = true;
+          }
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
+    case 'SET_TREMOLO_BETWEEN': {
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const i = measure.notes.findIndex(x => x.id === action.noteId && x.type === 'note');
+          if (i < 0) continue;
+          const n = measure.notes[i];
+          if (n.type !== 'note') continue;
+          // count 0 = remove (e.g. Delete on the fTrem glyph). The glyph spans
+          // two notes and may resolve to either, so clear this note AND the one
+          // that joins TO it.
+          if (action.count === 0) {
+            const prev = measure.notes[i - 1];
+            if (n.tremoloBetween != null) { delete n.tremoloBetween; touched = true; }
+            if (prev && prev.type === 'note' && prev.tremoloBetween != null) { delete prev.tremoloBetween; touched = true; }
+            continue;
+          }
+          // Set/toggle needs a following NOTE to join to.
+          const next = measure.notes[i + 1];
+          if (!next || next.type !== 'note') continue;
+          if (n.tremoloBetween === action.count) {
+            delete n.tremoloBetween;   // toggle off
+          } else {
+            n.tremoloBetween = action.count;
+            delete n.tremolo;          // exclusive with single tremolo / buzz
+            delete n.buzz;
+          }
+          touched = true;
+        }
+      }
+      if (!touched) return state;
+      return { ...hist, present: newScore, cursor: state.cursor };
+    }
+
+    case 'SET_FEATHERED': {
+      const hist = saveHistory(state);
+      const newScore = cloneScore(state.present);
+      let touched = false;
+      for (const part of newScore.parts) {
+        for (const measure of part.measures) {
+          const n = measure.notes.find(x => x.id === action.noteId && x.type === 'note');
+          if (n && n.type === 'note') {
+            if (action.dir === null || n.feathered === action.dir) {
+              delete n.feathered;          // toggle off
+            } else {
+              n.feathered = action.dir;
+            }
             touched = true;
           }
         }
@@ -1663,6 +1746,18 @@ export function useScore(initialScore?: Score) {
     (noteId: string, count: number) => dispatch({ type: 'SET_TREMOLO', noteId, count }),
     [],
   );
+  const setBuzz = useCallback(
+    (noteId: string) => dispatch({ type: 'SET_BUZZ', noteId }),
+    [],
+  );
+  const setTremoloBetween = useCallback(
+    (noteId: string, count: number) => dispatch({ type: 'SET_TREMOLO_BETWEEN', noteId, count }),
+    [],
+  );
+  const setFeathered = useCallback(
+    (noteId: string, dir: 'accel' | 'rit' | null) => dispatch({ type: 'SET_FEATHERED', noteId, dir }),
+    [],
+  );
   const toggleWords = useCallback(
     (noteId: string, text: string) => dispatch({ type: 'TOGGLE_WORDS', noteId, text }),
     [],
@@ -1730,6 +1825,9 @@ export function useScore(initialScore?: Score) {
     toggleStemlet,
     toggleGraceSlur,
     setTremolo,
+    setBuzz,
+    setTremoloBetween,
+    setFeathered,
     toggleWords,
     changeDuration,
     moveCursor,

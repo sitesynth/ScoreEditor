@@ -43,6 +43,9 @@ export type ToolbarOp =
    *  drawn over it (or toggle stemlet on a rest). */
   | { kind: 'stemlet' }
   | { kind: 'tremolo'; count: number }
+  | { kind: 'buzz-roll' }
+  | { kind: 'tremolo-between' }
+  | { kind: 'feathered'; dir: 'accel' | 'rit' }
   /** Toggle a SET of atomic articulations together. Used for combination
    *  buttons (accent+staccato, tenuto+accent, …) — stacked marks aren't
    *  expressible as a single MusicXML element, so we apply the atoms
@@ -747,8 +750,8 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       { icon: 'buttons/groups/4tremolos.svg',          label: 'Tremolo (2 slash)',         group: 2, op: { kind: 'tremolo', count: 2 } },
       { icon: 'buttons/groups/8tremolos.svg',          label: 'Tremolo (3 slash)',         group: 2, op: { kind: 'tremolo', count: 3 } },
       // ── Group 3: Advanced / phrase (3) ──
-      { icon: 'buttons/groups/tremolowithnextstem.svg',label: 'Tremolo with next stem',    group: 3 },
-      { icon: 'buttons/groups/featherbeamaccel.svg',   label: 'Feathered beam (accel.)',   group: 3 },
+      { icon: 'buttons/groups/tremolowithnextstem.svg', label: 'Tremolo with next stem (click cycles 2→3→4→off)', group: 3, op: { kind: 'tremolo-between' } },
+      { icon: 'buttons/groups/featherbeamaccel.svg',   label: 'Feathered beam (accel.)',   group: 3, op: { kind: 'feathered', dir: 'accel' } },
       // Tuplets — single dropdown button covering 2 → 9.
       {
         icon: 'buttons/groups/tuplet3.svg',
@@ -774,9 +777,9 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       // ── Group 2: Tremolos 4-5 slashes + buzz roll (3) ──
       { icon: 'buttons/groups/16tremolos.svg',         label: 'Tremolo (4 slash)',          group: 2, op: { kind: 'tremolo', count: 4 } },
       { icon: 'buttons/groups/32tremolos.svg',         label: 'Tremolo (5 slash)',          group: 2, op: { kind: 'tremolo', count: 5 } },
-      { icon: 'buttons/groups/buzzrolzonstem.svg',     label: 'Buzz roll on stem (z)',      group: 2 },
+      { icon: 'buttons/groups/buzzrolzonstem.svg',     label: 'Buzz roll on stem (z)',      group: 2, op: { kind: 'buzz-roll' } },
       // ── Group 3: Advanced finish + phrase (3) ──
-      { icon: 'buttons/groups/featherbeamrit.svg',     label: 'Feathered beam (rit.)',      group: 3 },
+      { icon: 'buttons/groups/featherbeamrit.svg',     label: 'Feathered beam (rit.)',      group: 3, op: { kind: 'feathered', dir: 'rit' } },
       { icon: 'buttons/articulations/slur.svg',        label: 'Slur (legato phrase)',       group: 3, op: { kind: 'slur' } },
       { icon: 'buttons/groups/Flip.svg',               label: 'Flip stem (up ↔ down)',      group: 3, op: { kind: 'flip-stem' } },
     ],

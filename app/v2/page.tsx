@@ -84,7 +84,7 @@ export default function EditorV2Page() {
     insertNote, insertRest, insertNoteAt, insertNoteAtBeat, insertRestAt, insertRestAtBeat,
     replaceAtIndex, deleteNotes, convertToRests, setBarline,
     changePitch, changeChordPitch, changeGracePitch, removeChordNote, addToChord, toggleArticulation, changeDuration, moveCursor,
-    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, toggleSecondaryBeam, toggleStemlet, setTremolo, toggleWords, toggleGraceSlur,
+    toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, setStemDir, setBeam, toggleSecondaryBeam, toggleStemlet, setTremolo, setBuzz, setTremoloBetween, setFeathered, toggleWords, toggleGraceSlur,
     setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
     toggleHairpin, toggleOctaveShift, togglePedal, setClefChange, setTimeSigChange,
@@ -282,8 +282,16 @@ export default function EditorV2Page() {
             continue;
           }
           if (id.startsWith('tremolo|')) {
+            // A tremolo glyph can be a single-note tremolo / buzz roll (bTrem)
+            // OR a between-note tremolo (fTrem); both surface as "tremolo|id".
+            // Clear every kind so Delete removes whichever it actually was.
             const noteId = id.slice('tremolo|'.length);
-            if (noteId) setTremolo(noteId, 0);
+            if (noteId) { setTremolo(noteId, 0); setTremoloBetween(noteId, 0); }
+            continue;
+          }
+          if (id.startsWith('feathered|')) {
+            const noteId = id.slice('feathered|'.length);
+            if (noteId) setFeathered(noteId, null);
             continue;
           }
           // Chord-note composite key?
@@ -1027,6 +1035,7 @@ export default function EditorV2Page() {
     // time the user typed a note).
     renderCustomTies();
     renderCustomSlurs();
+    renderCustomFeatheredBeams();
     // Tell visualization useEffects the mapping is fresh.
     setSvgRenderTick(t => t + 1);
 
@@ -1064,6 +1073,17 @@ export default function EditorV2Page() {
             const isGrace = slurEl.classList.contains('custom-slur-grace');
             const key = isGrace ? `graceSlur|${en}` : `slur|${s}|${en}`;
             useEditorStore.getState().toggleSelection(key, e.shiftKey);
+            selectionSourceRef.current = 'user';
+            e.stopPropagation();
+            return;
+          }
+        }
+        // Custom feathered beam — synthetic key "feathered|noteId".
+        const featherEl = (e.target as Element | null)?.closest?.('polygon.custom-feathered');
+        if (featherEl) {
+          const fid = featherEl.getAttribute('data-feathered');
+          if (fid) {
+            useEditorStore.getState().toggleSelection(`feathered|${fid}`, e.shiftKey);
             selectionSourceRef.current = 'user';
             e.stopPropagation();
             return;
@@ -1832,6 +1852,108 @@ export default function EditorV2Page() {
   // Verovio's <g class="slur"> is hidden in globals.css so only our path
   // shows. Path carries data-slur-start / data-slur-end so the selection
   // effect can tint it.
+  // ── Feathered beams ──
+  // Verovio's MusicXML importer ignores the `fan` attribute, so feathered
+  // (accel / rit) beams never render. We draw them ourselves: find the beam
+  // group of a note carrying `feathered`, hide Verovio's beam polygons, and
+  // add fan polygons (in the SAME user coords, inside the same <g class="beam">).
+  // accel = beams fan OPEN toward the end; rit = fan open toward the start.
+  const renderCustomFeatheredBeams = useCallback(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const NS = 'http://www.w3.org/2000/svg';
+    // Clear previous overlay + un-hide any beams we hid last pass.
+    svg.querySelectorAll('polygon.custom-feathered').forEach(e => e.remove());
+    svg.querySelectorAll('polygon[data-feathered-hidden]').forEach(p => {
+      (p as SVGPolygonElement).style.display = '';
+      p.removeAttribute('data-feathered-hidden');
+    });
+
+    const parsePts = (p: Element): number[][] =>
+      (p.getAttribute('points') || '').trim().split(/\s+/).map(s => s.split(',').map(Number));
+
+    const sc = scoreRef.current;
+    for (const part of sc.parts) {
+      for (const m of part.measures) {
+        for (const n of m.notes) {
+          if (n.type !== 'note' || !n.feathered) continue;
+          const vId = modelToVerovioRef.current.get(n.id);
+          const el = vId ? (svg.getElementById(vId) as SVGGElement | null) : null;
+          const beam = el ? el.closest('g.beam') : null;
+          if (!beam) continue;
+          const polys = [...beam.querySelectorAll('polygon')] as SVGPolygonElement[];
+          if (polys.length === 0) continue;
+
+          // Primary beam = the widest polygon (spans the whole group).
+          let primary = polys[0], primaryW = -1;
+          for (const p of polys) {
+            const xs = parsePts(p).map(q => q[0]);
+            const w = Math.max(...xs) - Math.min(...xs);
+            if (w > primaryW) { primaryW = w; primary = p; }
+          }
+          // Parse the primary as a (possibly SLOPED) parallelogram: split its
+          // corners into left/right, then read the top/bottom edge at each end.
+          // Using yBot-yTop of the whole bbox would over-count a sloped beam's
+          // thickness (thickness + slope), which is what made it look fat "at
+          // some positions" — sloped bars.
+          const pPts = parsePts(primary);
+          const allX = pPts.map(q => q[0]);
+          const xL = Math.min(...allX), xR = Math.max(...allX);
+          const xMid = (xL + xR) / 2;
+          const leftYs = pPts.filter(q => q[0] < xMid).map(q => q[1]);
+          const rightYs = pPts.filter(q => q[0] >= xMid).map(q => q[1]);
+          if (leftYs.length === 0 || rightYs.length === 0) continue;   // degenerate
+          const yTopL = Math.min(...leftYs), yBotL = Math.max(...leftYs);
+          const yTopR = Math.min(...rightYs), yBotR = Math.max(...rightYs);
+          const thick = ((yBotL - yTopL) + (yBotR - yTopR)) / 2;   // real beam thickness
+          const primCenter = (yTopL + yBotL + yTopR + yBotR) / 4;
+
+          // Which side do extra beams stack? Look at a secondary polygon: if it
+          // sits above the primary, beams stack UP (stem-down); else DOWN.
+          let stackDir = -1;
+          for (const p of polys) {
+            if (p === primary) continue;
+            const c = parsePts(p).map(q => q[1]);
+            const sc2 = (Math.min(...c) + Math.max(...c)) / 2;
+            stackDir = sc2 < primCenter ? -1 : 1;
+            break;
+          }
+          // Head-side edge of the primary (toward the noteheads), per end.
+          const edgeYL = stackDir < 0 ? yTopL : yBotL;
+          const edgeYR = stackDir < 0 ? yTopR : yBotR;
+
+          polys.forEach(p => { p.style.display = 'none'; p.setAttribute('data-feathered-hidden', '1'); });
+
+          const selected = useEditorStore.getState().selectedIds.has(`feathered|${n.id}`);
+          const mk = (pts: number[][]) => {
+            const pl = document.createElementNS(NS, 'polygon');
+            pl.setAttribute('points', pts.map(q => `${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' '));
+            pl.setAttribute('class', 'custom-feathered');
+            pl.setAttribute('data-feathered', n.id);
+            // Clickable for select/delete; tinted when selected.
+            pl.setAttribute('style', `pointer-events: auto; cursor: pointer; fill: ${selected ? '#2563eb' : '#000'};`);
+            beam.appendChild(pl);
+          };
+          // Primary beam — the real parallelogram (keeps the bar's slope).
+          mk([[xL, yTopL], [xR, yTopR], [xR, yBotR], [xL, yBotL]]);
+          // Fan beams run PARALLEL to the head edge (so they follow the slope),
+          // bunched at one end and spread at the other.
+          const accel = n.feathered === 'accel';
+          const gap = thick * 1.7;
+          const fanThick = thick * 0.85;
+          for (let i = 1; i <= 2; i++) {
+            const spread = i * gap * stackDir;          // offset toward heads
+            const offL = accel ? 0 : spread;            // accel bunches at left
+            const offR = accel ? spread : 0;            // …spreads at right
+            const aY = edgeYL + offL, bY = edgeYR + offR;
+            const innerOff = -stackDir * fanThick;      // band thickness, toward primary
+            mk([[xL, aY], [xR, bY], [xR, bY + innerOff], [xL, aY + innerOff]]);
+          }
+        }
+      }
+    }
+  }, []);
+
   const renderCustomSlurs = useCallback(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -2148,6 +2270,7 @@ export default function EditorV2Page() {
   useEffect(() => {
     renderCustomTies();
     renderCustomSlurs();
+    renderCustomFeatheredBeams();
   }, [svgRenderTick, renderCustomTies, renderCustomSlurs]);
 
   // ── Ghost preview via Verovio: mouse → spec → MusicXML → engraved note. ──
@@ -3337,6 +3460,51 @@ export default function EditorV2Page() {
         for (const id of ids) setTremolo(id, op.count);
         return;
       }
+      case 'buzz-roll': {
+        const ids = collectSelectedNoteIds();
+        for (const id of ids) setBuzz(id);
+        return;
+      }
+      case 'tremolo-between': {
+        // Click cycles the between-note tremolo on each selected note:
+        //   none → 2 → 3 → 4 → none  (like the "more dots" button).
+        // Read the live score via the ref (not the closure) so rapid repeat
+        // clicks always see the up-to-date count, and KEEP the selection so the
+        // user can keep clicking to add more beams.
+        const keepSel = new Set(useEditorStore.getState().selectedIds);
+        const ids = collectSelectedNoteIds();
+        for (const id of ids) {
+          let cur: number | undefined;
+          for (const p of scoreRef.current.parts) {
+            for (const m of p.measures) {
+              const n = m.notes.find(x => x.id === id && x.type === 'note');
+              if (n && n.type === 'note') cur = n.tremoloBetween;
+            }
+          }
+          const nextCount = cur == null ? 2 : cur >= 4 ? 0 : cur + 1;
+          setTremoloBetween(id, nextCount);
+        }
+        useEditorStore.getState().setSelectedIds(keepSel);
+        return;
+      }
+      case 'feathered': {
+        // Feathered beam over the selected group — applied to the EARLIEST
+        // selected note (the group's first note carries the fan). Toggle off by
+        // clicking the same direction again. Keep the selection.
+        const keepSel = new Set(useEditorStore.getState().selectedIds);
+        const ids = new Set(collectSelectedNoteIds());
+        let firstId: string | null = null;
+        outer: for (const p of scoreRef.current.parts) {
+          for (const m of p.measures) {
+            for (const n of m.notes) {
+              if (n.type === 'note' && ids.has(n.id)) { firstId = n.id; break outer; }
+            }
+          }
+        }
+        if (firstId) setFeathered(firstId, op.dir);
+        useEditorStore.getState().setSelectedIds(keepSel);
+        return;
+      }
       case 'alter-ext': {
         // Set an extended-range alter (±2, ±3) with the same toggle rule:
         // clicking the same alter twice in a row returns to natural. Also
@@ -3616,7 +3784,7 @@ export default function EditorV2Page() {
     }
   }, [
     collectSelectedNoteIds, toggleTie, toggleSlur, toggleSlide, toggleOrnament, setDynamics, toggleWords,
-    setStemDir, setBeam, setTremolo, changeDuration, insertRest, score, toggleArticulation,
+    setStemDir, setBeam, setTremolo, setBuzz, setTremoloBetween, setFeathered, changeDuration, insertRest, score, toggleArticulation,
     convertToRests, setBarline, cursor.measureIndex,
     changePitch, changeChordPitch, setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,

@@ -141,6 +141,16 @@ export interface Note {
   secondaryBeamStart?: boolean;
   /** Tremolo slash count (1..5). 0 / undefined = no tremolo. */
   tremolo?: number;
+  /** Buzz roll (unmeasured tremolo, "z" on the stem). Mutually exclusive with
+   *  `tremolo`. */
+  buzz?: boolean;
+  /** Between-note tremolo (fingered tremolo): this note is the START of a
+   *  tremolo joining it to the NEXT note; value = beam count (2..4). The next
+   *  note gets the matching stop at render time. */
+  tremoloBetween?: number;
+  /** Feathered beam over the beam group this note STARTS: 'accel' (fan opens)
+   *  or 'rit' (fan closes). Emitted as the MusicXML `fan` attribute. */
+  feathered?: 'accel' | 'rit';
   /** Free text directions ("pizz.", "arco", "sord.", "cresc.", "dim.",
    *  "Da Capo", "Dal Segno", "Coda", "Segno"). Rendered via <direction><words>
    *  BEFORE the note. */
