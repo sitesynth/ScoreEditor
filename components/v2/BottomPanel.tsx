@@ -6,8 +6,11 @@ import { useEditorStore, type DurationBase } from '@/lib/v2/editor-store';
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-export type PanelTab = 'Common' | 'More Notes' | 'Articulation' | 'Groups' | 'Bars' | 'Symbols';
-const TABS: PanelTab[] = ['Common', 'More Notes', 'Articulation', 'Groups', 'Bars', 'Symbols'];
+// 'Bars' (barlines / repeats / time-sig changes) is intentionally NOT a panel
+// tab — it's rare-notation markup that belongs in the future Palettes, not the
+// always-visible bar. The ops/reducer logic still exist for that later home.
+export type PanelTab = 'Common' | 'More Notes' | 'Articulation' | 'Groups' | 'Dynamics';
+const TABS: PanelTab[] = ['Common', 'More Notes', 'Articulation', 'Groups', 'Dynamics'];
 
 // ─── Generic toolbar op ──────────────────────────────────────────────────────
 // Anything that isn't a duration / alter / articulation goes through here.
@@ -90,6 +93,9 @@ export type ToolbarOp =
   | { kind: 'clef-change'; clef: 'treble' | 'bass' | 'alto' }
   /** Insert a mid-measure time-signature change before the selected note(s). */
   | { kind: 'time-sig-change'; num: number; den: number }
+  /** Set the score key signature (fifths: −7…+7, negative = flats). Global —
+   *  the model's keySig is score-wide (no per-measure key change yet). */
+  | { kind: 'key-sig'; fifths: number }
   /** Wrap the selected items in a tuplet of N actual notes per `den` normal
    *  notes (3:2 = triplet, 5:4 = quintuplet, …). When the existing selection
    *  is a single item, it's split into `num` items occupying the same beat
@@ -679,12 +685,13 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       { icon: 'buttons/common/accidentalDoubleSharp.svg',                        label: 'Double sharp (×)',       group: 3, op: { kind: 'alter-ext', alter: 2 } },
     ],
     row2: [
-      // ── Group 1 (LEFT): Grace notes + effects + dots (5) ──
+      // ── Group 1 (LEFT): Grace notes + effects + dots + tie (6) ──
       { icon: 'buttons/more-notes/acciaccatura.svg',                             label: 'Acciaccatura',           group: 1, op: { kind: 'grace', graceKind: 'acciaccatura' } },
       { icon: 'buttons/more-notes/appogiatura.svg',                              label: 'Appogiatura',            group: 1, op: { kind: 'grace', graceKind: 'appoggiatura' } },
       { icon: 'buttons/more-notes/pre-bend note.svg',                            label: 'Pre-bend',               group: 1, op: { kind: 'pre-bend' } },
       { icon: 'buttons/more-notes/breakedNotehead.svg',                          label: 'Broken notehead',        group: 1, op: { kind: 'notehead', shape: 'slashed' } },
       { icon: 'buttons/more-notes/DoubleDot.svg',                                label: 'More dots (cycle 0–3)',  group: 1, op: { kind: 'dots-more' } },
+      { icon: 'buttons/common/tie.svg',                                          label: 'Tie',                    group: 1, op: { kind: 'tie' } },
       // ── Group 2 (CENTER single-utility): Cue size on/off ──
       { icon: 'buttons/more-notes/onoff.svg',                                    label: 'Cue size on/off',        group: 2, op: { kind: 'cue-size' } },
       // ── Group 3 (RIGHT): Flats (6) — mild → extreme ──
@@ -697,9 +704,10 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
     ],
   },
   'Articulation': {
-    // Layout 5+5 / 3+1 / 3+3 — row1 = SIMPLE marks, row2 = COMBINED marks
+    // Layout 5+5 / 2+2 / 3+3 — row1 = SIMPLE marks, row2 = COMBINED marks
     // (where applicable), so reading vertically gives "atom → combo".
-    // (Group 2 row2 has just Harmonic since Mute on/off were removed.)
+    // (Group 2 is the bowing block: Down bow over Up bow, with Slur/Harmonic
+    //  filling the other column — a clean 2×2, no empty slots.)
     row1: [
       // ── Group 1: Simple articulation marks (5) ──
       { icon: 'buttons/articulations/articStaccatoAbove.svg',       label: 'Staccato',            group: 1, articulation: 'staccato' },
@@ -707,14 +715,18 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       { glyph: 'E4A4',                                              label: 'Tenuto',              group: 1, articulation: 'tenuto' },
       { icon: 'buttons/articulations/articAccentAbove.svg',         label: 'Accent',              group: 1, articulation: 'accent' },
       { icon: 'buttons/articulations/articMarcatoAbove.svg',        label: 'Marcato',             group: 1, articulation: 'strong-accent' },
-      // ── Group 2: Slur + bowing (3) ──
+      // ── Group 2: Slur + Down bow (2) — Up bow sits under Down bow in row2 ──
       { icon: 'buttons/articulations/slur.svg',                     label: 'Slur (legato)',       group: 2, op: { kind: 'slur' } },
       { icon: 'buttons/articulations/stringsDownBow.svg',           label: 'Down bow',            group: 2, articulation: 'down-bow' },
-      { icon: 'buttons/articulations/stringsUpBow.svg',             label: 'Up bow',              group: 2, articulation: 'up-bow' },
       // ── Group 3: Fermata + breath (3) ──
       { icon: 'buttons/articulations/fermataAbove.svg',             label: 'Fermata',             group: 3, articulation: 'fermata' },
       { icon: 'buttons/articulations/breathMarkComma.svg',          label: 'Breath mark',         group: 3, articulation: 'breath-mark' },
       { icon: 'buttons/articulations/Caesura.svg',                  label: 'Caesura',             group: 3, articulation: 'caesura' },
+      // ── Group 4: Ornaments (2) — NOT articulations (SMuFL 4.46), kept in
+      //  their own divided block. The two mordents stack in col 2
+      //  (Mordent ↑ / Short mordent ↓); Trill + Turn fill col 1. ──
+      { glyph: 'E566',                                              label: 'Trill',               group: 4, op: { kind: 'ornament', name: 'trill-mark' } },
+      { glyph: 'E56C',                                              label: 'Mordent',             group: 4, op: { kind: 'ornament', name: 'mordent' } },
     ],
     row2: [
       // ── Group 1: Combined articulations (5) ──
@@ -723,14 +735,18 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       { icon: 'buttons/articulations/articAccentStaccatoAbove.svg', label: 'Accent + staccato',   group: 1, op: { kind: 'articulations', names: ['staccato', 'accent'] } },
       { icon: 'buttons/articulations/articMarcatoStaccatoAbove.svg',label: 'Marcato + staccato',  group: 1, op: { kind: 'articulations', names: ['staccato', 'strong-accent'] } },
       { icon: 'buttons/articulations/articMarcatoTenutoAbove.svg',  label: 'Marcato + tenuto',    group: 1, op: { kind: 'articulations', names: ['tenuto', 'strong-accent'] } },
-      // ── Group 2: Harmonic (1) ──
+      // ── Group 2: Harmonic + Up bow (2) — Up bow (col 2) lands under Down bow ──
       // Mute on/off removed — no clean MusicXML/Verovio notation for them
       // (they rendered nothing). Removed per user 2026-06-10.
       { icon: 'buttons/articulations/stringsHarmonic.svg',          label: 'Harmonic',            group: 2, articulation: 'harmonic' },
+      { icon: 'buttons/articulations/stringsUpBow.svg',             label: 'Up bow',              group: 2, articulation: 'up-bow' },
       // ── Group 3: Fermata variants (3) ──
       { icon: 'buttons/articulations/fermataShortAbove.svg',        label: 'Short fermata',       group: 3, articulation: 'fermata-short' },
       { icon: 'buttons/articulations/fermataLongAbove.svg',         label: 'Long fermata',        group: 3, articulation: 'fermata-long' },
       { icon: 'buttons/articulations/fermataVeryLongAbove.svg',     label: 'Very long fermata',   group: 3, articulation: 'fermata-very-long' },
+      // ── Group 4: Ornaments row2 — Turn (col 1) + Short mordent (col 2, under Mordent) ──
+      { glyph: 'E567',                                              label: 'Turn',                group: 4, op: { kind: 'ornament', name: 'turn' } },
+      { glyph: 'E56D',                                              label: 'Short mordent',       group: 4, op: { kind: 'ornament', name: 'inverted-mordent' } },
     ],
   },
   'Groups': {
@@ -752,9 +768,10 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       // ── Group 3: Advanced / phrase (3) ──
       { icon: 'buttons/groups/tremolowithnextstem.svg', label: 'Tremolo with next stem (click cycles 2→3→4→off)', group: 3, op: { kind: 'tremolo-between' } },
       { icon: 'buttons/groups/featherbeamaccel.svg',   label: 'Feathered beam (accel.)',   group: 3, op: { kind: 'feathered', dir: 'accel' } },
-      // Tuplets — single dropdown button covering 2 → 9.
+      // Tuplets — single dropdown button covering 2 → 9. (Standalone triplet
+      // lives in row2; this dropdown wears the tuplet-4 icon to read distinct.)
       {
-        icon: 'buttons/groups/tuplet3.svg',
+        icon: 'buttons/groups/tuplet4.svg',
         label: 'Tuplets — pick figure',
         group: 3,
         dropdown: [
@@ -778,103 +795,45 @@ const TAB_CONTENT: Record<PanelTab, { row1: RowItem[]; row2: RowItem[] }> = {
       { icon: 'buttons/groups/16tremolos.svg',         label: 'Tremolo (4 slash)',          group: 2, op: { kind: 'tremolo', count: 4 } },
       { icon: 'buttons/groups/32tremolos.svg',         label: 'Tremolo (5 slash)',          group: 2, op: { kind: 'tremolo', count: 5 } },
       { icon: 'buttons/groups/buzzrolzonstem.svg',     label: 'Buzz roll on stem (z)',      group: 2, op: { kind: 'buzz-roll' } },
-      // ── Group 3: Advanced finish + phrase (3) ──
+      // ── Group 3: Advanced finish (3) ──
       { icon: 'buttons/groups/featherbeamrit.svg',     label: 'Feathered beam (rit.)',      group: 3, op: { kind: 'feathered', dir: 'rit' } },
-      { icon: 'buttons/articulations/slur.svg',        label: 'Slur (legato phrase)',       group: 3, op: { kind: 'slur' } },
+      { icon: 'buttons/groups/tuplet3.svg',            label: 'Triplet',                    group: 3, op: { kind: 'tuplet', num: 3 } },
       { icon: 'buttons/groups/Flip.svg',               label: 'Flip stem (up ↔ down)',      group: 3, op: { kind: 'flip-stem' } },
     ],
   },
-  'Bars': {
-    // Bar-level / structural markup. 10+10 = 20 buttons total.
-    //   Group 1: Barlines     ↔ Navigation labels
-    //   Group 2: Voltas       ↔ Time-signature changes
-    //   Group 3: Text markers ↔ More time-signature options
+  'Dynamics': {
+    // VOLUME ONLY — dynamic levels + sforzandos + hairpins. Everything that
+    // used to share this tab moved out: ornaments → Articulation (group 4);
+    // clefs / octave shifts (8va) / string techniques (pizz, arco…) / pedal →
+    // future Palettes (their ops/reducer logic still exist, just unsurfaced,
+    // like the old Bars tab). Layout 4+4 / 3+3 / 1+1 — all rows balanced.
     row1: [
-      // ── Group 1: Barlines (4) ──
-      { glyph: 'E040', label: 'Repeat start',      group: 1, op: { kind: 'barline', side: 'left',  style: 'repeat-start' } },
-      { glyph: 'E041', label: 'Repeat end',        group: 1, op: { kind: 'barline', side: 'right', style: 'repeat-end'   } },
-      { glyph: 'E031', label: 'Double bar',        group: 1, op: { kind: 'barline', side: 'right', style: 'double'       } },
-      { glyph: 'E032', label: 'Final bar',         group: 1, op: { kind: 'barline', side: 'right', style: 'final'        } },
-      // ── Group 2: Voltas (3) ──
-      { sym:   '1.',  label: '1st volta',          group: 2 },
-      { sym:   '2.',  label: '2nd volta',          group: 2 },
-      { sym:   '3.',  label: '3rd volta',          group: 2 },
-      // ── Group 3: Text markers (3) — flow control directions ──
-      { sym: 'Fine',         label: 'Fine',         group: 3, op: { kind: 'words', text: 'Fine' } },
-      { sym: 'To Coda',      label: 'To Coda',      group: 3, op: { kind: 'words', text: 'To Coda' } },
-      { sym: 'D.C. al Fine', label: 'D.C. al Fine', group: 3, op: { kind: 'words', text: 'D.C. al Fine' } },
+      // ── Group 1: Levels, soft half (ppp → mp) — loud half sits below ──
+      { glyph: 'E52A', label: 'pianississimo (ppp)', group: 1, op: { kind: 'dynamics', value: 'ppp' } },
+      { glyph: 'E52B', label: 'pianissimo (pp)',     group: 1, op: { kind: 'dynamics', value: 'pp'  } },
+      { glyph: 'E520', label: 'piano (p)',           group: 1, op: { kind: 'dynamics', value: 'p'   } },
+      { glyph: 'E52C', label: 'mezzo piano (mp)',    group: 1, op: { kind: 'dynamics', value: 'mp'  } },
+      // ── Group 2: Accented / sforzando dynamics ──
+      { glyph: 'E534', label: 'forte-piano (fp)',    group: 2, op: { kind: 'dynamics', value: 'fp'  } },
+      { glyph: 'E536', label: 'sforzando (sf)',      group: 2, op: { kind: 'dynamics', value: 'sf'  } },
+      { glyph: 'E539', label: 'sforzato (sfz)',      group: 2, op: { kind: 'dynamics', value: 'sfz' } },
+      // ── Group 3: Crescendo — hairpin wedge (col 1) + text "cresc." (col 2) ──
+      { glyph: 'E53E', label: 'Crescendo (hairpin)', group: 3, op: { kind: 'hairpin', hairpinKind: 'crescendo' } },
+      { sym: 'cresc.', label: 'cresc. (text)',       group: 3, op: { kind: 'words', text: 'cresc.' } },
     ],
     row2: [
-      // ── Group 1: Navigation labels (4) ──
-      { glyph: 'E045', label: 'Da Capo',           group: 1, op: { kind: 'words', text: 'D.C.' } },
-      { glyph: 'E046', label: 'Dal Segno',         group: 1, op: { kind: 'words', text: 'D.S.' } },
-      { glyph: 'E047', label: 'Coda',              group: 1, op: { kind: 'words', text: 'Coda' } },
-      { glyph: 'E048', label: 'Segno',             group: 1, op: { kind: 'words', text: 'Segno' } },
-      // ── Group 2: Time-sig changes — simple meters (3) ──
-      { glyph: 'E08A', label: 'Common time (4/4)', group: 2, op: { kind: 'time-sig-change', num: 4, den: 4 } },
-      { glyph: 'E08B', label: 'Cut time (2/2)',    group: 2, op: { kind: 'time-sig-change', num: 2, den: 2 } },
-      { sym: '3/4',    label: '3/4',                group: 2, op: { kind: 'time-sig-change', num: 3, den: 4 } },
-      // ── Group 3: Time-sig changes — compound / odd meters (3) ──
-      { sym: '6/8',   label: '6/8',                group: 3, op: { kind: 'time-sig-change', num: 6, den: 8 } },
-      { sym: '9/8',   label: '9/8',                group: 3, op: { kind: 'time-sig-change', num: 9, den: 8 } },
-      { sym: '12/8',  label: '12/8',               group: 3, op: { kind: 'time-sig-change', num: 12, den: 8 } },
-    ],
-  },
-  'Symbols': {
-    // Symmetric 7+7 / 2+2 / 3+3 layout. Vertically:
-    //   • dynamics (volume)      ↔ clefs + pedal + ornaments
-    //   • hairpins               ↔ octave shifts (gradient pitch range)
-    //   • ornaments (decoration) ↔ techniques (style directions)
-    // Time-sig changes moved to the new "Bars" tab.
-    row1: [
-      // ── Group 1: Dynamics (7) ──
-      { glyph: 'E52B', label: 'pianissimo',         group: 1, op: { kind: 'dynamics', value: 'pp' } },
-      { glyph: 'E520', label: 'piano',              group: 1, op: { kind: 'dynamics', value: 'p'  } },
-      { glyph: 'E52C', label: 'mezzo piano',        group: 1, op: { kind: 'dynamics', value: 'mp' } },
-      { glyph: 'E52D', label: 'mezzo forte',        group: 1, op: { kind: 'dynamics', value: 'mf' } },
-      { glyph: 'E522', label: 'forte',              group: 1, op: { kind: 'dynamics', value: 'f'  } },
-      { glyph: 'E52F', label: 'fortissimo',         group: 1, op: { kind: 'dynamics', value: 'ff' } },
-      { glyph: 'E539', label: 'sforzando',          group: 1, op: { kind: 'dynamics', value: 'sfz'} },
-      // ── Group 2: Hairpins + Pedal (3) ──
-      { glyph: 'E53E', label: 'Crescendo',          group: 2, op: { kind: 'hairpin', hairpinKind: 'crescendo' } },
-      { glyph: 'E53F', label: 'Diminuendo',         group: 2, op: { kind: 'hairpin', hairpinKind: 'diminuendo' } },
-      { glyph: 'E650', label: 'Pedal down',         group: 2, op: { kind: 'pedal' } },
-      // ── Group 3: Ornaments (3) ──
-      { glyph: 'E566', label: 'Trill',              group: 3, op: { kind: 'ornament', name: 'trill-mark' } },
-      { glyph: 'E56C', label: 'Mordent',            group: 3, op: { kind: 'ornament', name: 'mordent' } },
-      { glyph: 'E567', label: 'Turn',               group: 3, op: { kind: 'ornament', name: 'turn' } },
-    ],
-    row2: [
-      // ── Group 1: Clefs (3) + … to match dynamics, we just put 3 clefs + 4 octave-line markers? ──
-      // Keep it clean: 7 = clefs(3) + octave-shifts(3) + 1 unused...
-      // Simpler: split so each row2 group matches row1 count.
-      // Row1 group1 = 7 → Row2 group1 = 7 = 3 clefs + 3 octave shifts + 1 sustain symbol? Pedal already moved up.
-      // Use: 3 clefs + 4 string-technique words (pizz/arco/sord/...) instead.
-      // Decision below: 3 clefs + 3 octave shifts + 1 placeholder = ugly.
-      // Better: keep 3 clefs only in group1, drop down to 3, and re-balance row1.
-      // We re-balanced row1: dynamics(7)|hairpins+pedal(3)|ornaments(3) = 13.
-      // So row2 must be 13 too: clefs(3)|octave-shifts(3)|techniques(3) = 9 ≠ 13.
-      // Add 4 more useful items: D.C./D.S./Coda/Segno were moved to Bars,
-      // so keep here some text directions or repeat tempo markings.
-      // Final choice — row2: clefs(3)+key-sig-glyphs(4)=7 | octave(3) | techniques(3).
-      // Since key-sig changes don't have a backend op yet, fill group1 with
-      // 4 string-bow technique words: "ord." (ordinario), "sul pont.",
-      // "sul tasto", "col legno" — all real performance directions.
-      { glyph: 'E050', label: 'Treble clef',        group: 1, op: { kind: 'clef-change', clef: 'treble' } },
-      { glyph: 'E062', label: 'Bass clef',          group: 1, op: { kind: 'clef-change', clef: 'bass'   } },
-      { glyph: 'E05C', label: 'Alto/Tenor clef',    group: 1, op: { kind: 'clef-change', clef: 'alto'   } },
-      { sym: 'ord.',   label: 'Ordinario',          group: 1, op: { kind: 'words', text: 'ord.' } },
-      { sym: 's.p.',   label: 'Sul ponticello',     group: 1, op: { kind: 'words', text: 'sul pont.' } },
-      { sym: 's.t.',   label: 'Sul tasto',          group: 1, op: { kind: 'words', text: 'sul tasto' } },
-      { sym: 'c.l.',   label: 'Col legno',          group: 1, op: { kind: 'words', text: 'col legno' } },
-      // ── Group 2: Octave shifts (3) ──
-      { sym: '8va',    label: '8va (octave up)',    group: 2, op: { kind: 'octave-shift', shift: '8va-up' } },
-      { sym: '8vb',    label: '8vb (octave down)',  group: 2, op: { kind: 'octave-shift', shift: '8va-down' } },
-      { sym: '15ma',   label: '15ma (two oct up)',  group: 2, op: { kind: 'octave-shift', shift: '15ma-up' } },
-      // ── Group 3: Techniques (3) ──
-      { sym: 'pizz.',  label: 'Pizzicato',          group: 3, op: { kind: 'words', text: 'pizz.' } },
-      { sym: 'arco',   label: 'Arco',               group: 3, op: { kind: 'words', text: 'arco'  } },
-      { sym: 'sord.',  label: 'With mute',          group: 3, op: { kind: 'words', text: 'sord.' } },
+      // ── Group 1: Levels, loud half (mf → fff) ──
+      { glyph: 'E52D', label: 'mezzo forte (mf)',    group: 1, op: { kind: 'dynamics', value: 'mf'  } },
+      { glyph: 'E522', label: 'forte (f)',           group: 1, op: { kind: 'dynamics', value: 'f'   } },
+      { glyph: 'E52F', label: 'fortissimo (ff)',     group: 1, op: { kind: 'dynamics', value: 'ff'  } },
+      { glyph: 'E530', label: 'fortississimo (fff)', group: 1, op: { kind: 'dynamics', value: 'fff' } },
+      // ── Group 2: Accented / sforzando dynamics (continued) ──
+      { glyph: 'E535', label: 'forzando (fz)',       group: 2, op: { kind: 'dynamics', value: 'fz'   } },
+      { glyph: 'E53C', label: 'rinforzando (rf)',    group: 2, op: { kind: 'dynamics', value: 'rf'   } },
+      { glyph: 'E53B', label: 'sforzato-ff (sffz)',  group: 2, op: { kind: 'dynamics', value: 'sffz' } },
+      // ── Group 3: Diminuendo — hairpin wedge (col 1) + text "dim." (col 2) ──
+      { glyph: 'E53F', label: 'Diminuendo (hairpin)', group: 3, op: { kind: 'hairpin', hairpinKind: 'diminuendo' } },
+      { sym: 'dim.',   label: 'dim. (text)',          group: 3, op: { kind: 'words', text: 'dim.' } },
     ],
   },
 };

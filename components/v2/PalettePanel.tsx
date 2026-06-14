@@ -2,6 +2,17 @@
 
 import React, { useMemo, useState } from 'react';
 import { C } from '@/lib/theme';
+import { type ToolbarOp } from './BottomPanel';
+import type { DurationBase } from '@/lib/v2/music-model';
+
+/** The four dispatch handlers the palette shares with the BottomPanel toolbar,
+ *  so a palette button behaves EXACTLY like the same button in the toolbar. */
+export interface PaletteHandlers {
+  onOp?: (op: ToolbarOp) => void;
+  onArticulationClick?: (name: string) => void;
+  onDurationClick?: (d: DurationBase) => void;
+  onAccidentalClick?: (alter: -1 | 0 | 1) => void;
+}
 
 // ─── Item ────────────────────────────────────────────────────────────────────
 
@@ -13,6 +24,18 @@ interface PaletteItem {
   label: string;
   /** Use dark→white inversion (for dark PNGs). */
   invert?: boolean;
+  // ── Action (mirror BottomPanel's RowItem so a palette button dispatches the
+  //    SAME notation op as the toolbar). Exactly one is set on a live button;
+  //    items with none are inert catalog glyphs (no backend op yet). ──
+  /** Generic op → onOp (tie, dynamics, ornament, barline, clef-change, …). */
+  op?: ToolbarOp;
+  /** Articulation MusicXML name → onArticulationClick. */
+  articulation?: string;
+  /** Basic accidental alter → onAccidentalClick (applies to selection or arms next note). */
+  alter?: -1 | 0 | 1;
+  /** Duration → onDurationClick. */
+  duration?: DurationBase;
+  /** Escape hatch for bespoke handlers (rarely used). */
   onClick?: () => void;
 }
 
@@ -34,14 +57,14 @@ const PALETTES: PaletteGroup[] = [
     defaultOpen: true,
     defaultVisible: 8,
     items: [
-      { icon: 'smufl/clefs/gClef.png',      label: 'Treble',                   invert: true },
+      { icon: 'smufl/clefs/gClef.png',      label: 'Treble',                   invert: true, op: { kind: 'clef-change', clef: 'treble' } },
       { icon: 'smufl/clefs/gClef8va.png',   label: 'Treble 8va',               invert: true },
       { icon: 'smufl/clefs/gClef8vb.png',   label: 'Treble 8vb',               invert: true },
       { icon: 'smufl/clefs/gClef15ma.png',  label: 'Treble 15ma',              invert: true },
-      { icon: 'smufl/clefs/fClef.png',      label: 'Bass',                     invert: true },
+      { icon: 'smufl/clefs/fClef.png',      label: 'Bass',                     invert: true, op: { kind: 'clef-change', clef: 'bass' } },
       { icon: 'smufl/clefs/fClef8va.png',   label: 'Bass 8va',                 invert: true },
       { icon: 'smufl/clefs/fClef8vb.png',   label: 'Bass 8vb',                 invert: true },
-      { icon: 'smufl/clefs/cClef.png',      label: 'C clef (alto/tenor)',      invert: true },
+      { icon: 'smufl/clefs/cClef.png',      label: 'C clef (alto/tenor)',      invert: true, op: { kind: 'clef-change', clef: 'alto' } },
       // ── More variants ──
       { icon: 'smufl/clefs/gClef15mb.png',  label: 'Treble 15mb',              invert: true },
       { icon: 'smufl/clefs/cClef8vb.png',   label: 'C clef 8vb',               invert: true },
@@ -62,39 +85,39 @@ const PALETTES: PaletteGroup[] = [
     name: 'Key signatures',
     defaultVisible: 8,
     items: [
-      { glyph: 'E260', label: '1 flat' },
-      { glyph: 'E260', label: '2 flats' },
-      { glyph: 'E260', label: '3 flats' },
-      { glyph: 'E260', label: '4 flats' },
-      { glyph: 'E260', label: '5 flats' },
-      { glyph: 'E261', label: 'C major / a minor' },
-      { glyph: 'E262', label: '1 sharp' },
-      { glyph: 'E262', label: '2 sharps' },
-      { glyph: 'E262', label: '3 sharps' },
-      { glyph: 'E262', label: '4 sharps' },
-      { glyph: 'E262', label: '5 sharps' },
+      { glyph: 'E260', label: '1 flat',   op: { kind: 'key-sig', fifths: -1 } },
+      { glyph: 'E260', label: '2 flats',  op: { kind: 'key-sig', fifths: -2 } },
+      { glyph: 'E260', label: '3 flats',  op: { kind: 'key-sig', fifths: -3 } },
+      { glyph: 'E260', label: '4 flats',  op: { kind: 'key-sig', fifths: -4 } },
+      { glyph: 'E260', label: '5 flats',  op: { kind: 'key-sig', fifths: -5 } },
+      { glyph: 'E261', label: 'C major / a minor', op: { kind: 'key-sig', fifths: 0 } },
+      { glyph: 'E262', label: '1 sharp',  op: { kind: 'key-sig', fifths: 1 } },
+      { glyph: 'E262', label: '2 sharps', op: { kind: 'key-sig', fifths: 2 } },
+      { glyph: 'E262', label: '3 sharps', op: { kind: 'key-sig', fifths: 3 } },
+      { glyph: 'E262', label: '4 sharps', op: { kind: 'key-sig', fifths: 4 } },
+      { glyph: 'E262', label: '5 sharps', op: { kind: 'key-sig', fifths: 5 } },
     ],
   },
   {
     name: 'Time signatures',
     defaultVisible: 8,
     items: [
-      { icon: 'smufl/timesigs/timeSigCommon.svg',    label: 'Common time' },
-      { icon: 'smufl/timesigs/timeSigCutCommon.svg', label: 'Cut time' },
-      { icon: 'smufl/timesigs/timeSig2over4.svg',    label: '2/4' },
-      { icon: 'smufl/timesigs/timeSig3over4.svg',    label: '3/4' },
-      { icon: 'smufl/timesigs/timeSig4over4.svg',    label: '4/4' },
-      { icon: 'smufl/timesigs/timeSig5over4.svg',    label: '5/4' },
-      { icon: 'smufl/timesigs/timeSig6over4.svg',    label: '6/4' },
-      { icon: 'smufl/timesigs/timeSig6over8.svg',    label: '6/8' },
+      { icon: 'smufl/timesigs/timeSigCommon.svg',    label: 'Common time', op: { kind: 'time-sig-change', num: 4, den: 4 } },
+      { icon: 'smufl/timesigs/timeSigCutCommon.svg', label: 'Cut time',    op: { kind: 'time-sig-change', num: 2, den: 2 } },
+      { icon: 'smufl/timesigs/timeSig2over4.svg',    label: '2/4',  op: { kind: 'time-sig-change', num: 2,  den: 4 } },
+      { icon: 'smufl/timesigs/timeSig3over4.svg',    label: '3/4',  op: { kind: 'time-sig-change', num: 3,  den: 4 } },
+      { icon: 'smufl/timesigs/timeSig4over4.svg',    label: '4/4',  op: { kind: 'time-sig-change', num: 4,  den: 4 } },
+      { icon: 'smufl/timesigs/timeSig5over4.svg',    label: '5/4',  op: { kind: 'time-sig-change', num: 5,  den: 4 } },
+      { icon: 'smufl/timesigs/timeSig6over4.svg',    label: '6/4',  op: { kind: 'time-sig-change', num: 6,  den: 4 } },
+      { icon: 'smufl/timesigs/timeSig6over8.svg',    label: '6/8',  op: { kind: 'time-sig-change', num: 6,  den: 8 } },
       // More
-      { icon: 'smufl/timesigs/timeSig2over2.svg',    label: '2/2' },
-      { icon: 'smufl/timesigs/timeSig3over2.svg',    label: '3/2' },
-      { icon: 'smufl/timesigs/timeSig3over8.svg',    label: '3/8' },
-      { icon: 'smufl/timesigs/timeSig5over8.svg',    label: '5/8' },
-      { icon: 'smufl/timesigs/timeSig7over8.svg',    label: '7/8' },
-      { icon: 'smufl/timesigs/timeSig9over8.svg',    label: '9/8' },
-      { icon: 'smufl/timesigs/timeSig12over8.svg',   label: '12/8' },
+      { icon: 'smufl/timesigs/timeSig2over2.svg',    label: '2/2',  op: { kind: 'time-sig-change', num: 2,  den: 2 } },
+      { icon: 'smufl/timesigs/timeSig3over2.svg',    label: '3/2',  op: { kind: 'time-sig-change', num: 3,  den: 2 } },
+      { icon: 'smufl/timesigs/timeSig3over8.svg',    label: '3/8',  op: { kind: 'time-sig-change', num: 3,  den: 8 } },
+      { icon: 'smufl/timesigs/timeSig5over8.svg',    label: '5/8',  op: { kind: 'time-sig-change', num: 5,  den: 8 } },
+      { icon: 'smufl/timesigs/timeSig7over8.svg',    label: '7/8',  op: { kind: 'time-sig-change', num: 7,  den: 8 } },
+      { icon: 'smufl/timesigs/timeSig9over8.svg',    label: '9/8',  op: { kind: 'time-sig-change', num: 9,  den: 8 } },
+      { icon: 'smufl/timesigs/timeSig12over8.svg',   label: '12/8', op: { kind: 'time-sig-change', num: 12, den: 8 } },
     ],
   },
   {
@@ -105,45 +128,45 @@ const PALETTES: PaletteGroup[] = [
       { glyph: 'E1D3', label: 'Half = bpm' },
       { glyph: 'E1D7', label: 'Eighth = bpm' },
       { glyph: 'E1D5', label: 'Dotted ♩ = bpm' },
-      { glyph: 'E520', label: 'Largo' },
-      { glyph: 'E520', label: 'Adagio' },
+      { glyph: 'E520', label: 'Largo',       op: { kind: 'words', text: 'Largo' } },
+      { glyph: 'E520', label: 'Adagio',      op: { kind: 'words', text: 'Adagio' } },
       // More
-      { glyph: 'E520', label: 'Andante' },
-      { glyph: 'E520', label: 'Moderato' },
-      { glyph: 'E520', label: 'Allegro' },
-      { glyph: 'E520', label: 'Presto' },
-      { glyph: 'E520', label: 'Prestissimo' },
-      { glyph: 'E520', label: 'Accelerando' },
-      { glyph: 'E520', label: 'Ritardando' },
-      { glyph: 'E520', label: 'rit.' },
-      { glyph: 'E520', label: 'accel.' },
+      { glyph: 'E520', label: 'Andante',     op: { kind: 'words', text: 'Andante' } },
+      { glyph: 'E520', label: 'Moderato',    op: { kind: 'words', text: 'Moderato' } },
+      { glyph: 'E520', label: 'Allegro',     op: { kind: 'words', text: 'Allegro' } },
+      { glyph: 'E520', label: 'Presto',      op: { kind: 'words', text: 'Presto' } },
+      { glyph: 'E520', label: 'Prestissimo', op: { kind: 'words', text: 'Prestissimo' } },
+      { glyph: 'E520', label: 'Accelerando', op: { kind: 'words', text: 'accel.' } },
+      { glyph: 'E520', label: 'Ritardando',  op: { kind: 'words', text: 'rit.' } },
+      { glyph: 'E520', label: 'rit.',        op: { kind: 'words', text: 'rit.' } },
+      { glyph: 'E520', label: 'accel.',      op: { kind: 'words', text: 'accel.' } },
     ],
   },
   {
     name: 'Accidentals',
     defaultVisible: 8,
     items: [
-      { icon: 'smufl/accidentals/accidentalDoubleFlat.svg',   label: 'Double flat' },
-      { icon: 'smufl/accidentals/accidentalFlat.svg',         label: 'Flat' },
-      { icon: 'smufl/accidentals/accidentalNatural.svg',      label: 'Natural' },
-      { icon: 'smufl/accidentals/accidentalSharp.svg',        label: 'Sharp' },
-      { icon: 'smufl/accidentals/accidentalDoubleSharp.svg',  label: 'Double sharp' },
-      { icon: 'smufl/accidentals/accidentalTripleFlat.svg',   label: 'Triple flat' },
-      { icon: 'smufl/accidentals/accidentalTripleSharp.svg',  label: 'Triple sharp' },
-      { icon: 'smufl/accidentals/BracketAccidental.svg',      label: 'Bracketed' },
+      { icon: 'smufl/accidentals/accidentalDoubleFlat.svg',   label: 'Double flat',  op: { kind: 'alter-ext', alter: -2 } },
+      { icon: 'smufl/accidentals/accidentalFlat.svg',         label: 'Flat',         alter: -1 },
+      { icon: 'smufl/accidentals/accidentalNatural.svg',      label: 'Natural',      alter: 0 },
+      { icon: 'smufl/accidentals/accidentalSharp.svg',        label: 'Sharp',        alter: 1 },
+      { icon: 'smufl/accidentals/accidentalDoubleSharp.svg',  label: 'Double sharp', op: { kind: 'alter-ext', alter: 2 } },
+      { icon: 'smufl/accidentals/accidentalTripleFlat.svg',   label: 'Triple flat',  op: { kind: 'alter-ext', alter: -3 } },
+      { icon: 'smufl/accidentals/accidentalTripleSharp.svg',  label: 'Triple sharp', op: { kind: 'alter-ext', alter: 3 } },
+      { icon: 'smufl/accidentals/BracketAccidental.svg',      label: 'Bracketed',    op: { kind: 'bracket-accidental' } },
       // More
-      { icon: 'smufl/accidentals/accidentalNaturalFlat.svg',  label: 'Natural flat' },
-      { icon: 'smufl/accidentals/accidentalNaturalSharp.svg', label: 'Natural sharp' },
-      { icon: 'smufl/accidentals/accidentalSharpSharp.svg',   label: 'Sharp-sharp' },
+      { icon: 'smufl/accidentals/accidentalNaturalFlat.svg',  label: 'Natural flat',  op: { kind: 'accidental-display', value: 'natural-flat' } },
+      { icon: 'smufl/accidentals/accidentalNaturalSharp.svg', label: 'Natural sharp', op: { kind: 'accidental-display', value: 'natural-sharp' } },
+      { icon: 'smufl/accidentals/accidentalSharpSharp.svg',   label: 'Sharp-sharp',   op: { kind: 'alter-ext', alter: 2 } },
       { icon: 'smufl/accidentals/accidentalFlatParens.svg',     label: '(♭)' },
       { icon: 'smufl/accidentals/accidentalNaturalParens.svg',  label: '(♮)' },
       { icon: 'smufl/accidentals/accidentalSharpParens.svg',    label: '(♯)' },
       { icon: 'smufl/accidentals/accidentalDoubleFlatParens.svg',  label: '(♭♭)' },
       { icon: 'smufl/accidentals/accidentalDoubleSharpParens.svg', label: '(𝄪)' },
-      { icon: 'smufl/accidentals/accidentalQuarterToneFlatStein.svg',          label: 'Quarter-tone ♭' },
-      { icon: 'smufl/accidentals/accidentalQuarterToneSharpStein.svg',         label: 'Quarter-tone ♯' },
-      { icon: 'smufl/accidentals/accidentalThreeQuarterTonesFlatZimmermann.svg', label: '¾-tone ♭ (Zimm.)' },
-      { icon: 'smufl/accidentals/accidentalThreeQuarterTonesSharpStein.svg',     label: '¾-tone ♯ (Stein)' },
+      { icon: 'smufl/accidentals/accidentalQuarterToneFlatStein.svg',          label: 'Quarter-tone ♭', op: { kind: 'accidental-display', value: 'quarter-flat' } },
+      { icon: 'smufl/accidentals/accidentalQuarterToneSharpStein.svg',         label: 'Quarter-tone ♯', op: { kind: 'accidental-display', value: 'quarter-sharp' } },
+      { icon: 'smufl/accidentals/accidentalThreeQuarterTonesFlatZimmermann.svg', label: '¾-tone ♭ (Zimm.)', op: { kind: 'accidental-display', value: 'three-quarters-flat' } },
+      { icon: 'smufl/accidentals/accidentalThreeQuarterTonesSharpStein.svg',     label: '¾-tone ♯ (Stein)', op: { kind: 'accidental-display', value: 'three-quarters-sharp' } },
       { icon: 'smufl/accidentals/accidentalNarrowReversedFlat.svg',     label: 'Narrow rev. ♭' },
       { icon: 'smufl/accidentals/accidentalNarrowReversedFlatAndFlat.svg', label: 'Narrow rev. ♭ + ♭' },
       // Bravura microtonal extras
@@ -161,76 +184,76 @@ const PALETTES: PaletteGroup[] = [
     name: 'Dynamics',
     defaultVisible: 8,
     items: [
-      { glyph: 'E52B', label: 'pp (pianissimo)' },
-      { glyph: 'E520', label: 'p (piano)' },
-      { glyph: 'E52C', label: 'mp (mezzo piano)' },
-      { glyph: 'E52D', label: 'mf (mezzo forte)' },
-      { glyph: 'E522', label: 'f (forte)' },
-      { glyph: 'E52F', label: 'ff (fortissimo)' },
-      { glyph: 'E53E', label: 'Crescendo hairpin' },
-      { glyph: 'E53F', label: 'Diminuendo hairpin' },
+      { glyph: 'E52B', label: 'pp (pianissimo)',  op: { kind: 'dynamics', value: 'pp'  } },
+      { glyph: 'E520', label: 'p (piano)',        op: { kind: 'dynamics', value: 'p'   } },
+      { glyph: 'E52C', label: 'mp (mezzo piano)', op: { kind: 'dynamics', value: 'mp'  } },
+      { glyph: 'E52D', label: 'mf (mezzo forte)', op: { kind: 'dynamics', value: 'mf'  } },
+      { glyph: 'E522', label: 'f (forte)',        op: { kind: 'dynamics', value: 'f'   } },
+      { glyph: 'E52F', label: 'ff (fortissimo)',  op: { kind: 'dynamics', value: 'ff'  } },
+      { glyph: 'E53E', label: 'Crescendo hairpin',  op: { kind: 'hairpin', hairpinKind: 'crescendo'  } },
+      { glyph: 'E53F', label: 'Diminuendo hairpin', op: { kind: 'hairpin', hairpinKind: 'diminuendo' } },
       // More
-      { glyph: 'E52A', label: 'ppp' },
-      { glyph: 'E531', label: 'fff' },
-      { glyph: 'E539', label: 'sfz (sforzando)' },
-      { glyph: 'E537', label: 'sf' },
-      { glyph: 'E53C', label: 'sffz' },
-      { glyph: 'E535', label: 'fp' },
-      { glyph: 'E534', label: 'pf' },
-      { glyph: 'E541', label: 'niente (n)' },
-      { glyph: 'E538', label: 'rfz (rinforzando)' },
-      { glyph: 'E536', label: 'fz' },
-      { glyph: 'E529', label: 'pppp' },
-      { glyph: 'E532', label: 'ffff' },
+      { glyph: 'E52A', label: 'ppp',              op: { kind: 'dynamics', value: 'ppp'  } },
+      { glyph: 'E531', label: 'fff',              op: { kind: 'dynamics', value: 'fff'  } },
+      { glyph: 'E539', label: 'sfz (sforzando)',  op: { kind: 'dynamics', value: 'sfz'  } },
+      { glyph: 'E537', label: 'sf',               op: { kind: 'dynamics', value: 'sf'   } },
+      { glyph: 'E53C', label: 'sffz',             op: { kind: 'dynamics', value: 'sffz' } },
+      { glyph: 'E535', label: 'fp',               op: { kind: 'dynamics', value: 'fp'   } },
+      { glyph: 'E534', label: 'pf',               op: { kind: 'dynamics', value: 'pf'   } },
+      { glyph: 'E541', label: 'niente (n)',       op: { kind: 'dynamics', value: 'n'    } },
+      { glyph: 'E538', label: 'rfz (rinforzando)',op: { kind: 'dynamics', value: 'rfz'  } },
+      { glyph: 'E536', label: 'fz',               op: { kind: 'dynamics', value: 'fz'   } },
+      { glyph: 'E529', label: 'pppp',             op: { kind: 'dynamics', value: 'pppp' } },
+      { glyph: 'E532', label: 'ffff',             op: { kind: 'dynamics', value: 'ffff' } },
     ],
   },
   {
     name: 'Articulations',
     defaultVisible: 8,
     items: [
-      { icon: 'buttons/articulations/articAccentAbove.svg',          label: 'Accent' },
-      { icon: 'buttons/articulations/articStaccatoAbove.svg',        label: 'Staccato' },
-      { icon: 'buttons/articulations/articStaccatissimoAbove.svg',   label: 'Staccatissimo' },
-      { icon: 'buttons/articulations/articMarcatoAbove.svg',         label: 'Marcato' },
-      { icon: 'buttons/articulations/fermataAbove.svg',              label: 'Fermata' },
-      { icon: 'buttons/articulations/breathMarkComma.svg',           label: 'Breath mark' },
-      { icon: 'buttons/articulations/stringsDownBow.svg',            label: 'Down bow' },
-      { icon: 'buttons/articulations/stringsUpBow.svg',              label: 'Up bow' },
+      { icon: 'buttons/articulations/articAccentAbove.svg',          label: 'Accent',        articulation: 'accent' },
+      { icon: 'buttons/articulations/articStaccatoAbove.svg',        label: 'Staccato',      articulation: 'staccato' },
+      { icon: 'buttons/articulations/articStaccatissimoAbove.svg',   label: 'Staccatissimo', articulation: 'staccatissimo' },
+      { icon: 'buttons/articulations/articMarcatoAbove.svg',         label: 'Marcato',       articulation: 'strong-accent' },
+      { icon: 'buttons/articulations/fermataAbove.svg',              label: 'Fermata',       articulation: 'fermata' },
+      { icon: 'buttons/articulations/breathMarkComma.svg',           label: 'Breath mark',   articulation: 'breath-mark' },
+      { icon: 'buttons/articulations/stringsDownBow.svg',            label: 'Down bow',      articulation: 'down-bow' },
+      { icon: 'buttons/articulations/stringsUpBow.svg',              label: 'Up bow',        articulation: 'up-bow' },
       // More
-      { icon: 'buttons/articulations/articAccentStaccatoAbove.svg',  label: 'Accent + staccato' },
-      { icon: 'buttons/articulations/articTenutoAccentAbove.svg',    label: 'Tenuto + accent' },
-      { icon: 'buttons/articulations/articTenutoStaccatoAbove.svg',  label: 'Tenuto + staccato' },
-      { icon: 'buttons/articulations/articMarcatoStaccatoAbove.svg', label: 'Marcato + staccato' },
-      { icon: 'buttons/articulations/articMarcatoTenutoAbove.svg',   label: 'Marcato + tenuto' },
-      { icon: 'buttons/articulations/articUnstressBelow.svg',        label: 'Unstress' },
-      { icon: 'buttons/articulations/fermataShortAbove.svg',         label: 'Short fermata' },
-      { icon: 'buttons/articulations/fermataLongAbove.svg',          label: 'Long fermata' },
-      { icon: 'buttons/articulations/fermataVeryLongAbove.svg',      label: 'Very long fermata' },
-      { icon: 'buttons/articulations/Caesura.svg',                   label: 'Caesura' },
-      { icon: 'buttons/articulations/stringsHarmonic.svg',           label: 'Harmonic' },
+      { icon: 'buttons/articulations/articAccentStaccatoAbove.svg',  label: 'Accent + staccato',   op: { kind: 'articulations', names: ['staccato', 'accent'] } },
+      { icon: 'buttons/articulations/articTenutoAccentAbove.svg',    label: 'Tenuto + accent',     op: { kind: 'articulations', names: ['tenuto', 'accent'] } },
+      { icon: 'buttons/articulations/articTenutoStaccatoAbove.svg',  label: 'Tenuto + staccato',   op: { kind: 'articulations', names: ['staccato', 'tenuto'] } },
+      { icon: 'buttons/articulations/articMarcatoStaccatoAbove.svg', label: 'Marcato + staccato',  op: { kind: 'articulations', names: ['staccato', 'strong-accent'] } },
+      { icon: 'buttons/articulations/articMarcatoTenutoAbove.svg',   label: 'Marcato + tenuto',    op: { kind: 'articulations', names: ['tenuto', 'strong-accent'] } },
+      { icon: 'buttons/articulations/articUnstressBelow.svg',        label: 'Unstress',      articulation: 'unstress' },
+      { icon: 'buttons/articulations/fermataShortAbove.svg',         label: 'Short fermata',     articulation: 'fermata-short' },
+      { icon: 'buttons/articulations/fermataLongAbove.svg',          label: 'Long fermata',      articulation: 'fermata-long' },
+      { icon: 'buttons/articulations/fermataVeryLongAbove.svg',      label: 'Very long fermata', articulation: 'fermata-very-long' },
+      { icon: 'buttons/articulations/Caesura.svg',                   label: 'Caesura',       articulation: 'caesura' },
+      { icon: 'buttons/articulations/stringsHarmonic.svg',           label: 'Harmonic',      articulation: 'harmonic' },
       { icon: 'buttons/articulations/stringsThumbPosition.svg',      label: 'Thumb position' },
       { icon: 'buttons/articulations/Mute on.svg',                   label: 'Mute on' },
       { icon: 'buttons/articulations/Mute off.svg',                  label: 'Mute off' },
       { glyph: 'E4BA', label: 'Laissez vibrer' },
-      { glyph: 'E4B6', label: 'Stress' },
-      { glyph: 'E4B7', label: 'Unstress (above)' },
+      { glyph: 'E4B6', label: 'Stress',          articulation: 'stress' },
+      { glyph: 'E4B7', label: 'Unstress (above)', articulation: 'unstress' },
     ],
   },
   {
     name: 'Ornaments',
     defaultVisible: 8,
     items: [
-      { glyph: 'E566', label: 'Trill' },
-      { glyph: 'E56C', label: 'Short mordent' },
-      { glyph: 'E56D', label: 'Mordent' },
-      { glyph: 'E567', label: 'Turn' },
-      { glyph: 'E568', label: 'Inverted turn' },
+      { glyph: 'E566', label: 'Trill',         op: { kind: 'ornament', name: 'trill-mark' } },
+      { glyph: 'E56C', label: 'Short mordent', op: { kind: 'ornament', name: 'mordent' } },
+      { glyph: 'E56D', label: 'Mordent',       op: { kind: 'ornament', name: 'inverted-mordent' } },
+      { glyph: 'E567', label: 'Turn',          op: { kind: 'ornament', name: 'turn' } },
+      { glyph: 'E568', label: 'Inverted turn', op: { kind: 'ornament', name: 'inverted-turn' } },
       { glyph: 'E569', label: 'Turn slash' },
-      { glyph: 'E5B0', label: 'Tremolo 1 (single)' },
-      { glyph: 'E5B1', label: 'Tremolo 2' },
+      { glyph: 'E5B0', label: 'Tremolo 1 (single)', op: { kind: 'tremolo', count: 1 } },
+      { glyph: 'E5B1', label: 'Tremolo 2',     op: { kind: 'tremolo', count: 2 } },
       // More
-      { glyph: 'E5B2', label: 'Tremolo 3' },
-      { glyph: 'E5B3', label: 'Tremolo 4' },
+      { glyph: 'E5B2', label: 'Tremolo 3',     op: { kind: 'tremolo', count: 3 } },
+      { glyph: 'E5B3', label: 'Tremolo 4',     op: { kind: 'tremolo', count: 4 } },
       { glyph: 'E56A', label: 'Turn with slash' },
       { glyph: 'E56B', label: 'Turn up' },
       { glyph: 'E56E', label: 'Mordent with upper prefix' },
@@ -246,13 +269,13 @@ const PALETTES: PaletteGroup[] = [
     name: 'Repeats & jumps',
     defaultVisible: 8,
     items: [
-      { icon: 'smufl/repeats/repeatLeft.svg',          label: 'Repeat start' },
-      { icon: 'smufl/repeats/repeatRight.svg',         label: 'Repeat end' },
+      { icon: 'smufl/repeats/repeatLeft.svg',          label: 'Repeat start', op: { kind: 'barline', side: 'left',  style: 'repeat-start' } },
+      { icon: 'smufl/repeats/repeatRight.svg',         label: 'Repeat end',   op: { kind: 'barline', side: 'right', style: 'repeat-end' } },
       { icon: 'smufl/repeats/repeatRightLeft.svg',     label: 'Repeat both' },
-      { icon: 'smufl/repeats/daCapo.svg',              label: 'D.C.' },
-      { icon: 'smufl/repeats/dalSegno.svg',            label: 'D.S.' },
-      { icon: 'smufl/repeats/coda.svg',                label: 'Coda' },
-      { icon: 'smufl/repeats/segno.svg',               label: 'Segno' },
+      { icon: 'smufl/repeats/daCapo.svg',              label: 'D.C.',   op: { kind: 'words', text: 'D.C.' } },
+      { icon: 'smufl/repeats/dalSegno.svg',            label: 'D.S.',   op: { kind: 'words', text: 'D.S.' } },
+      { icon: 'smufl/repeats/coda.svg',                label: 'Coda',   op: { kind: 'words', text: 'Coda' } },
+      { icon: 'smufl/repeats/segno.svg',               label: 'Segno',  op: { kind: 'words', text: 'Segno' } },
       { icon: 'smufl/repeats/repeatDots.svg',          label: 'Repeat dots' },
       // More
       { icon: 'smufl/repeats/repeatRightLeftThick.svg',label: 'Thick both' },
@@ -271,8 +294,8 @@ const PALETTES: PaletteGroup[] = [
     defaultVisible: 8,
     items: [
       { icon: 'smufl/barlines/barlineSingle.svg',        label: 'Single' },
-      { icon: 'smufl/barlines/barlineDouble.svg',        label: 'Double' },
-      { icon: 'smufl/barlines/barlineFinal.svg',         label: 'Final' },
+      { icon: 'smufl/barlines/barlineDouble.svg',        label: 'Double', op: { kind: 'barline', side: 'right', style: 'double' } },
+      { icon: 'smufl/barlines/barlineFinal.svg',         label: 'Final',  op: { kind: 'barline', side: 'right', style: 'final' } },
       { icon: 'smufl/barlines/barlineReverseFinal.svg',  label: 'Reverse final' },
       { icon: 'smufl/barlines/barlineDashed.svg',        label: 'Dashed' },
       { icon: 'smufl/barlines/barlineDotted.svg',        label: 'Dotted' },
@@ -284,7 +307,7 @@ const PALETTES: PaletteGroup[] = [
     name: 'Keyboard',
     defaultVisible: 6,
     items: [
-      { glyph: 'E650', label: 'Pedal mark (Ped.)' },
+      { glyph: 'E650', label: 'Pedal mark (Ped.)', op: { kind: 'pedal' } },
       { glyph: 'E655', label: 'Pedal up (*)' },
       { glyph: 'E659', label: 'Half pedal' },
       { glyph: 'E658', label: 'Pedal heel toe' },
@@ -323,8 +346,17 @@ const PALETTES: PaletteGroup[] = [
 
 // ─── Item button ─────────────────────────────────────────────────────────────
 
-function PaletteItemBtn({ item }: { item: PaletteItem }) {
+function PaletteItemBtn({ item, handlers }: { item: PaletteItem; handlers: PaletteHandlers }) {
   const [hov, setHov] = useState(false);
+  // Resolve the click to the matching handler — identical precedence to the
+  // toolbar's ItemBtn so a palette button == the toolbar button.
+  const click =
+    item.duration       ? () => handlers.onDurationClick?.(item.duration!)
+    : item.alter !== undefined ? () => handlers.onAccidentalClick?.(item.alter!)
+    : item.articulation ? () => handlers.onArticulationClick?.(item.articulation!)
+    : item.op           ? () => handlers.onOp?.(item.op!)
+    : item.onClick;
+  const wired = !!click;  // false = inert catalog glyph (no backend op yet)
   const inner = item.icon ? (
     <img
       src={`/icons/${item.icon.split('/').map(encodeURIComponent).join('/')}`}
@@ -352,16 +384,18 @@ function PaletteItemBtn({ item }: { item: PaletteItem }) {
 
   return (
     <button
-      title={item.label}
-      onClick={item.onClick}
+      title={wired ? item.label : `${item.label} (not wired yet)`}
+      onClick={click}
+      disabled={!wired}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
         width: 50, height: 50,
-        background: hov ? 'rgba(255,255,255,0.06)' : 'transparent',
-        border: `1px solid ${hov ? C.btnBorder : 'transparent'}`,
+        background: hov && wired ? 'rgba(255,255,255,0.06)' : 'transparent',
+        border: `1px solid ${hov && wired ? C.btnBorder : 'transparent'}`,
         borderRadius: 6,
-        cursor: 'pointer',
+        opacity: wired ? 1 : 0.32,
+        cursor: wired ? 'pointer' : 'default',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -377,8 +411,8 @@ function PaletteItemBtn({ item }: { item: PaletteItem }) {
 // ─── Group section ───────────────────────────────────────────────────────────
 
 function GroupSection({
-  group, open, onToggle, filter,
-}: { group: PaletteGroup; open: boolean; onToggle: () => void; filter: string }) {
+  group, open, onToggle, filter, handlers,
+}: { group: PaletteGroup; open: boolean; onToggle: () => void; filter: string; handlers: PaletteHandlers }) {
   const [expanded, setExpanded] = useState(false);
 
   const filtered = filter
@@ -429,7 +463,7 @@ function GroupSection({
             gap: 4,
             padding: '8px 4px 4px',
           }}>
-            {visibleItems.map((it, i) => <PaletteItemBtn key={`${it.icon ?? it.glyph}-${i}`} item={it} />)}
+            {visibleItems.map((it, i) => <PaletteItemBtn key={`${it.icon ?? it.glyph}-${i}`} item={it} handlers={handlers} />)}
           </div>
           {hasMore && (
             <button
@@ -458,12 +492,12 @@ function GroupSection({
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
-interface Props {
+interface Props extends PaletteHandlers {
   open: boolean;
   onClose: () => void;
 }
 
-export default function PalettePanel({ open, onClose }: Props) {
+export default function PalettePanel({ open, onClose, ...handlers }: Props) {
   const [openGroups, setOpenGroups] = useState<Set<string>>(
     new Set(PALETTES.filter(g => g.defaultOpen).map(g => g.name)),
   );
@@ -554,6 +588,7 @@ export default function PalettePanel({ open, onClose }: Props) {
             open={openGroups.has(g.name)}
             onToggle={() => toggle(g.name)}
             filter={filter}
+            handlers={handlers}
           />
         ))}
       </div>

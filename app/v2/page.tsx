@@ -88,7 +88,7 @@ export default function EditorV2Page() {
     setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
     toggleHairpin, toggleOctaveShift, togglePedal, setClefChange, setTimeSigChange,
-    toggleTuplet,
+    toggleTuplet, setKeySig,
     undo, redo,
   } = useScore();
 
@@ -98,6 +98,12 @@ export default function EditorV2Page() {
   const activeDots       = useEditorStore((s) => s.activeDots);
   const pendingAlter     = useEditorStore((s) => s.pendingAlter);
   const selectedIds      = useEditorStore((s) => s.selectedIds);
+
+  // "Latest" ref to handleDurationClick (defined far below). The keydown handler
+  // is set up above it, so a direct reference would hit the temporal dead zone;
+  // a ref lets the duration hotkeys (Ctrl+1/2/4/8…) call the same logic the
+  // duration buttons use. Assigned every render right after handleDurationClick.
+  const durationKeyRef = useRef<(d: DurationBase) => void>(() => {});
 
   // Ghost preview spec — holds beat/pitch info used for commit. The visual
   // preview is rendered as an HTML overlay (see `cursorGhostPos`), so this
@@ -241,6 +247,18 @@ export default function EditorV2Page() {
         setZoom(100);
         e.preventDefault();
         return;
+      }
+
+      // Duration hotkeys: Ctrl+<denominator> → note value (1=whole, 2=half,
+      // 4=quarter, 8=eighth). Plain digits build chord intervals, so duration
+      // uses Ctrl. preventDefault stops the browser switching tabs on Ctrl+1..8.
+      // (Smaller values 16th/32nd… to be added once the user picks a mapping.)
+      if (e.ctrlKey || e.metaKey) {
+        const DUR_BY_DIGIT: Record<string, DurationBase> = {
+          Digit1: 'whole', Digit2: 'half', Digit4: 'quarter', Digit8: 'eighth',
+        };
+        const dur = DUR_BY_DIGIT[code];
+        if (dur) { durationKeyRef.current(dur); e.preventDefault(); return; }
       }
 
       if (code === 'Delete' || code === 'Backspace') {
@@ -2363,10 +2381,18 @@ export default function EditorV2Page() {
     let staffIdx = 0;
     let bestScore = -Infinity;
     const STAFF_HYST_PX = (measure.staves[0]?.lineSpacing ?? 12) * 3;
+    // Let the TOP staff (treble) reach further DOWN before the ghost flips to
+    // bass — user wants to place treble notes down to ~F3 (it stopped at ~middle
+    // C). Safe now that staves are at the seamless natural distance: the ledger
+    // ladder is continuous, so F3 sits at the same Y on both staves and the flip
+    // stays smooth. Bias the top staff's score → flip boundary moves DOWN by
+    // ~half this (×4 ≈ 4 half-steps lower ≈ C4→F3). Tune the ×4 to taste.
+    const TOP_STAFF_REACH_PX = (measure.staves[0]?.lineSpacing ?? 12) * 4;
     for (let i = 0; i < measure.staves.length; i++) {
       const s = measure.staves[i];
       const center = (s.topY + s.bottomY) / 2;
       let score = -Math.abs(cy - center);
+      if (i === 0) score += TOP_STAFF_REACH_PX;   // treble reaches lower
       if (prevPitchSnap && (s.el as SVGGElement).id === prevPitchSnap.staffElId) {
         score += STAFF_HYST_PX;
       }
@@ -2423,11 +2449,13 @@ export default function EditorV2Page() {
       //     preview (see ghostChordOnlyXml path in measureXml) so the
       //     user can add a pitch to an existing note as a chord.
       const restRanges: Array<[number, number]> = [];
+      const restStarts: number[] = [];   // start beat of EACH rest item
       const noteStarts: number[] = [];
       let beat = 0;
       for (const item of measureModel.notes) {
         const ib = durationBeats(item.duration);
         if (item.type === 'rest') {
+          restStarts.push(beat);
           // MERGE adjacent rests into one insertable span — a longer note can
           // consume several back-to-back rests (e.g. a half note dropped onto
           // quarter+eighth+eighth rests). INSERT_NOTE_AT_BEAT then reshuffles
@@ -2440,15 +2468,25 @@ export default function EditorV2Page() {
         }
         beat += ib;
       }
-      for (let b = 0; b + noteBeats <= measureBeats + 0.001; b += noteBeats) {
+      // Candidate start beats: the on-beat grid (0, nb, 2nb…) PLUS the start of
+      // EVERY rest — so a quarter/half can begin exactly where a rest begins,
+      // even OFF the on-beat grid (e.g. a half note at beat 1 inside a 1–3 rest,
+      // or a quarter right after an off-beat eighth). The old code only offered
+      // the grid, so a half note could start only at beats 0/2 → you couldn't
+      // place it where a rest actually sat. It still must FIT inside the (merged)
+      // rest space; INSERT_NOTE_AT_BEAT splits the rest and re-pads, so existing
+      // notes are never displaced.
+      const candidateBeats = new Set<number>();
+      for (let b = 0; b + noteBeats <= measureBeats + 0.001; b += noteBeats) candidateBeats.add(b);
+      for (const s of restStarts) if (s + noteBeats <= measureBeats + 0.001) candidateBeats.add(s);
+      for (const b of candidateBeats) {
         const fitsInRest = restRanges.some(
           ([s, e]) => b >= s - 0.001 && b + noteBeats <= e + 0.001,
         );
         const onMatchingNote = noteStarts.some((ns) => Math.abs(ns - b) < 0.001);
-        if (fitsInRest || onMatchingNote) {
-          validBeats.push(b);
-        }
+        if (fitsInRest || onMatchingNote) validBeats.push(b);
       }
+      validBeats.sort((a, b) => a - b);
     }
     if (validBeats.length === 0) {
       // No room for this duration anywhere in the measure.
@@ -3165,6 +3203,8 @@ export default function EditorV2Page() {
     for (const id of targets) changeDuration(id, { base: d, dots: 0 });
     store.setActiveDuration(d);
   }, [score, changeDuration]);
+  // Keep the duration-hotkey ref pointing at the latest handler (see keydown).
+  durationKeyRef.current = handleDurationClick;
 
   // Apply an accidental to every selected note (and chord-note). When
   // selection is empty, fall back to setting pendingAlter for next keyboard
@@ -3416,12 +3456,37 @@ export default function EditorV2Page() {
         return;
       }
       case 'flip-stem': {
-        // For each selected note read its current stemDir from the live
-        // score and toggle. 'auto' (undefined) defaults to 'down' on first
-        // flip — Verovio's auto rules cover most cases as 'up', so 'down'
-        // is the productive first toggle. Re-press flips to 'up'.
+        // Flip each selected note's stem independently — so a single note
+        // picked INSIDE a beam flips just its own stem (Verovio draws a
+        // mixed beam), while selecting the whole group flips every stem.
+        //
+        // The toggle is anchored to the stem the user actually SEES. With an
+        // explicit stemDir we just invert it. With 'auto' (no stored dir) the
+        // first press must oppose whatever Verovio currently draws — for a
+        // beamed note that's the BEAM's direction, not a per-note default — so
+        // we read the rendered stem geometry out of the live SVG and flip away
+        // from it. Without this the first press often re-asserts the direction
+        // already on screen and nothing visibly moves.
         const ids = collectSelectedNoteIds();
         const live = scoreRef.current;
+        const svg = svgRef.current;
+        // Rendered stem direction of a note id, read from its SVG <g class=
+        // "stem"> vs its notehead: stem extending mostly ABOVE the head → up.
+        const renderedStemDir = (id: string): 'up' | 'down' | null => {
+          if (!svg) return null;
+          const vId = modelToVerovioRef.current.get(id);
+          const noteEl = (vId ? svg.getElementById(vId) : svg.getElementById(id)) as SVGGElement | null;
+          if (!noteEl) return null;
+          const stemEl = noteEl.querySelector('g.stem, .stem') as SVGGElement | null;
+          const headEl = noteEl.querySelector('g.notehead, .notehead') as SVGGElement | null;
+          if (!stemEl || !headEl) return null;
+          const sr = stemEl.getBoundingClientRect();
+          const hr = headEl.getBoundingClientRect();
+          if (sr.height === 0) return null;
+          const headMid = hr.top + hr.height / 2;
+          // Larger span on the side the stem points to (screen y grows down).
+          return (headMid - sr.top) >= (sr.bottom - headMid) ? 'up' : 'down';
+        };
         for (const id of ids) {
           let cur: 'up' | 'down' | undefined;
           outer: for (const part of live.parts) {
@@ -3430,7 +3495,9 @@ export default function EditorV2Page() {
               if (n && n.type === 'note') { cur = n.stemDir; break outer; }
             }
           }
-          const next: 'up' | 'down' = cur === 'up' ? 'down' : 'up';
+          const next: 'up' | 'down' = cur
+            ? (cur === 'up' ? 'down' : 'up')
+            : (renderedStemDir(id) === 'up' ? 'down' : 'up');
           setStemDir(id, next);
         }
         return;
@@ -3693,6 +3760,11 @@ export default function EditorV2Page() {
         for (const id of ids) setTimeSigChange(id, op.num, op.den);
         return;
       }
+      case 'key-sig': {
+        // Global key signature (model keySig is score-wide). No selection needed.
+        setKeySig(op.fifths);
+        return;
+      }
       case 'tuplet': {
         // Tuplet button:
         //   • Note/rest selected and NOT in a tuplet → wrap it into a tuplet
@@ -3789,7 +3861,7 @@ export default function EditorV2Page() {
     changePitch, changeChordPitch, setAccidentalDisplay, toggleBracketAccidental, toggleCueSize, setBekarMark, toggleGrace,
     setNotehead, togglePreBend, convertToGrace, setGraceKind,
     toggleHairpin, toggleOctaveShift, togglePedal, setClefChange, setTimeSigChange,
-    toggleTuplet,
+    toggleTuplet, setKeySig,
   ]);
 
   // Resolve the user's selection into a flat list of model note ids,
@@ -3989,7 +4061,14 @@ export default function EditorV2Page() {
 
         {/* Palettes side panel (MuseScore-style, slide-out drawer). The
             toggle lives in EditorTopBar — small icon next to the project tab. */}
-        <PalettePanel open={palettesOpen} onClose={() => setPalettesOpen(false)} />
+        <PalettePanel
+          open={palettesOpen}
+          onClose={() => setPalettesOpen(false)}
+          onDurationClick={handleDurationClick}
+          onAccidentalClick={handleAccidentalClick}
+          onArticulationClick={handleArticulationClick}
+          onOp={handleOp}
+        />
       </div>
 
       {/* Marquee overlay — drawn in client (fixed) coords */}

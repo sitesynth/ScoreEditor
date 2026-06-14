@@ -345,15 +345,19 @@ function computeAutoBeams(
     };
     for (const e of entries) {
       if (e.id === '__break__') {
-        // Don't UNCONDITIONALLY flush on a rest — that broke beam groups
-        // every time the padded-measure invariant inserted a tiny auto
-        // rest between two notes the user meant to be consecutive (e.g.
-        // 4+padded+4 thirty-seconds on one beat → 2 separate primary
-        // beams instead of one). Let the bgIdx-based flush below decide:
-        // if the NEXT beamable note lands in the SAME level-1 window as
-        // the current pending run, the run continues across the rest.
-        // Cross-window rests still implicitly close the run because the
-        // next note's bgIdx will differ.
+        // Beams DO NOT cross a rest. Any rest (or non-beamable note) closes
+        // the current run, so notes separated by a rest get flags — e.g. an
+        // eighth, an eighth rest, an eighth render as two flagged eighths,
+        // NOT one beam drawn over the rest. The ONLY way to beam over a rest
+        // is the explicit STEMLET (Groups → rest-under-beam): a stemlet rest
+        // is collected as a beamable entry above, never as a __break__, so it
+        // stays inside the run here.
+        //
+        // (A run of TRULY consecutive notes — e.g. eight 32nds on one beat —
+        // has no rest between them, so it never hits this branch and still
+        // forms one continuous primary beam.)
+        flush();
+        curBgIdx = -1;
         continue;
       }
       const bgIdx = Math.floor(e.offset / level1Window + 1e-9);
@@ -669,9 +673,13 @@ function noteXml(
   }
   // autoBeam === 'none' or undefined → no beam tag (flag).
 
-  // Notehead shape override (broken/slash/x/diamond/…).
-  const noteheadXml = item.notehead && item.notehead !== 'normal'
-    ? `<notehead>${item.notehead}</notehead>` : '';
+  // Notehead shape override (broken/slash/x/diamond/…). Verovio doesn't render
+  // MusicXML notehead="slashed" (the "Broken notehead" button used it and drew
+  // nothing) — map it to "slash", the supported slashed/rhythm notehead glyph.
+  const NOTEHEAD_VALUE: Record<string, string> = { slashed: 'slash' };
+  const noteheadVal = item.notehead ? (NOTEHEAD_VALUE[item.notehead] ?? item.notehead) : '';
+  const noteheadXml = noteheadVal && noteheadVal !== 'normal'
+    ? `<notehead>${noteheadVal}</notehead>` : '';
 
   const notationsXml = (articulationsBlock || fermataBlock || ornamentsBlock || tiedBlock || slurBlock || slideBlock || tupletNotationXml)
     ? `<notations>${tiedBlock}${slurBlock}${slideBlock}${fermataBlock}${ornamentsBlock}${articulationsBlock}${tupletNotationXml}</notations>`

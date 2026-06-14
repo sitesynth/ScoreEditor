@@ -79,7 +79,22 @@ export default function VerovioRenderer({ musicXml, options, onSvgRendered }: Pr
           justificationSystem: 0,
           justificationStaff: 0,
           spacingSystem: 18,
-          spacingStaff: 14,
+          // Inter-staff distance = NATURAL grand-staff distance so the ghost
+          // cursor crosses treble↔bass seamlessly. The ghost flips staff at the
+          // geometric midpoint (≈ middle C); the flip only looks seamless when
+          // middle C renders at the SAME Y on both staves. Measured in Verovio:
+          // that happens near the natural grand-staff distance. deltaY grows
+          // ~1 line-space per +2 here (orig 14 → ~5 line-space leap = the jerk).
+          // Natural grand-staff distance (user chose smooth crossover over wide
+          // spacing, 2026-06-15). At 12 the live gap ≈ 2 line-spaces, so middle C
+          // renders at the SAME Y on treble & bass → the ghost flips staff at ≈C4
+          // with NO height jump (seamless). Wider (was 18/24) makes the flip leap;
+          // that was the дёргание. Vertical-only; tuned X snapping unaffected.
+          spacingStaff: 12,
+          // Push dynamics (p, f, sfz…) a bit further below the staff — the
+          // Verovio default (1 MEI unit) makes them hug the bottom staff line.
+          // 2.5 ≈ ~1.25 staff-spaces of clearance.
+          dynamDist: 2.5,
           // Render hints that make selection easier later
           svgViewBox: true,
           svgRemoveXlink: true,
